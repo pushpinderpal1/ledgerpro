@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { verifyToken } from '@/lib/auth'
 
 const PUBLIC_PATHS = [
-  '/login', '/register', '/api/auth/login', '/api/auth/register',
+  '/', '/api/auth/login', '/api/auth/register',
   '/_next', '/favicon.ico',
 ]
 
@@ -19,7 +19,7 @@ export async function middleware(req: NextRequest) {
     if (pathname.startsWith('/api/')) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
-    return NextResponse.redirect(new URL('/login', req.url))
+    return NextResponse.redirect(new URL('/', req.url))
   }
 
   const session = await verifyToken(token)
@@ -27,12 +27,11 @@ export async function middleware(req: NextRequest) {
     if (pathname.startsWith('/api/')) {
       return NextResponse.json({ error: 'Session expired' }, { status: 401 })
     }
-    const res = NextResponse.redirect(new URL('/login', req.url))
+    const res = NextResponse.redirect(new URL('/', req.url))
     res.cookies.delete('ledgerpro_session')
     return res
   }
 
-  // Inject user info into headers for API routes
   const res = NextResponse.next()
   res.headers.set('x-user-id', session.userId)
   res.headers.set('x-user-email', session.email)
