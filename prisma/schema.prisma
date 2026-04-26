@@ -3,10 +3,9 @@ generator client {
 }
 
 datasource db {
-  provider          = "postgresql"
-  url               = env("DATABASE_URL")
-  directUrl         = env("DIRECT_URL")
-  relationMode      = "prisma"
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 // ─── TENANCY LAYER ───────────────────────────────────────────────────────────
@@ -26,36 +25,35 @@ model LegalEntity {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  // Relations
-  userAccess    EntityAccess[]
-  accounts      Account[]
+  userAccess     EntityAccess[]
+  accounts       Account[]
   journalEntries JournalEntry[]
-  apInvoices    ApInvoice[]
-  employees     Employee[]
-  payrollRuns   PayrollRun[]
-  budgets       Budget[]
-  clients       Client[]
-  iifImports    IifImport[]
-  auditLogs     AuditLog[]
+  apInvoices     ApInvoice[]
+  employees      Employee[]
+  payrollRuns    PayrollRun[]
+  budgets        Budget[]
+  clients        Client[]
+  iifImports     IifImport[]
+  auditLogs      AuditLog[]
 
   @@map("legal_entities")
 }
 
 model User {
-  id            String    @id @default(cuid())
-  email         String    @unique
-  name          String
-  passwordHash  String
-  avatarUrl     String?
-  isSuperAdmin  Boolean   @default(false)
-  isActive      Boolean   @default(true)
-  lastLoginAt   DateTime?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  id          String    @id @default(cuid())
+  email       String    @unique
+  name        String
+  passwordHash String
+  avatarUrl   String?
+  isSuperAdmin Boolean  @default(false)
+  isActive    Boolean   @default(true)
+  lastLoginAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
-  entityAccess  EntityAccess[]
-  auditLogs     AuditLog[]
-  sessions      Session[]
+  entityAccess EntityAccess[]
+  auditLogs    AuditLog[]
+  sessions     Session[]
 
   @@map("users")
 }
@@ -73,13 +71,13 @@ model Session {
 }
 
 model EntityAccess {
-  id           String      @id @default(cuid())
-  userId       String
-  entityId     String
-  role         EntityRole
-  isActive     Boolean     @default(true)
-  grantedAt    DateTime    @default(now())
-  grantedBy    String?
+  id        String     @id @default(cuid())
+  userId    String
+  entityId  String
+  role      EntityRole
+  isActive  Boolean    @default(true)
+  grantedAt DateTime   @default(now())
+  grantedBy String?
 
   user   User        @relation(fields: [userId], references: [id], onDelete: Cascade)
   entity LegalEntity @relation(fields: [entityId], references: [id], onDelete: Cascade)
@@ -89,16 +87,16 @@ model EntityAccess {
 }
 
 enum EntityRole {
-  OWNER        // Full control including delete entity
-  ADMIN        // All ops except delete entity
-  ACCOUNTANT   // All accounting ops, no user mgmt
-  AUDITOR      // Read-only all modules
-  AP_CLERK     // AP tracker only
-  PAYROLL_CLERK // Payroll module only
-  CLIENT_VIEW  // Read-only selected reports
+  OWNER
+  ADMIN
+  ACCOUNTANT
+  AUDITOR
+  AP_CLERK
+  PAYROLL_CLERK
+  CLIENT_VIEW
 }
 
-// ─── CLIENTS (within entity) ──────────────────────────────────────────────────
+// ─── CLIENTS ─────────────────────────────────────────────────────────────────
 
 model Client {
   id          String   @id @default(cuid())
@@ -112,7 +110,7 @@ model Client {
   isActive    Boolean  @default(true)
   createdAt   DateTime @default(now())
 
-  entity     LegalEntity  @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  entity     LegalEntity @relation(fields: [entityId], references: [id], onDelete: Cascade)
   apInvoices ApInvoice[]
 
   @@unique([entityId, code])
@@ -122,22 +120,22 @@ model Client {
 // ─── CHART OF ACCOUNTS ───────────────────────────────────────────────────────
 
 model Account {
-  id          String      @id @default(cuid())
-  entityId    String
-  code        String
-  name        String
-  type        AccountType
-  subType     String?
-  description String?
-  parentId    String?
-  isActive    Boolean     @default(true)
-  isBankAccount Boolean   @default(false)
-  taxCode     String?
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
+  id            String      @id @default(cuid())
+  entityId      String
+  code          String
+  name          String
+  type          AccountType
+  subType       String?
+  description   String?
+  parentId      String?
+  isActive      Boolean     @default(true)
+  isBankAccount Boolean     @default(false)
+  taxCode       String?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
 
   entity       LegalEntity  @relation(fields: [entityId], references: [id], onDelete: Cascade)
-  parent       Account?     @relation("AccountHierarchy", fields: [parentId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  parent       Account?     @relation("AccountHierarchy", fields: [parentId], references: [id], onDelete: SetNull, onUpdate: Cascade)
   children     Account[]    @relation("AccountHierarchy")
   journalLines JournalLine[]
   apInvoices   ApInvoice[]
@@ -166,14 +164,14 @@ model JournalEntry {
   description String
   memo        String?
   status      JournalStatus @default(DRAFT)
-  source      String?       // MANUAL, IIF_IMPORT, PAYROLL, AP
+  source      String?
   recurringId String?
   createdBy   String?
   postedAt    DateTime?
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
 
-  entity LegalEntity   @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  entity LegalEntity  @relation(fields: [entityId], references: [id], onDelete: Cascade)
   lines  JournalLine[]
 
   @@unique([entityId, ref])
@@ -190,7 +188,7 @@ model JournalLine {
   lineOrder   Int     @default(0)
 
   entry   JournalEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
-  account Account      @relation(fields: [accountId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  account Account      @relation(fields: [accountId], references: [id], onDelete: Restrict)
 
   @@map("journal_lines")
 }
@@ -205,7 +203,7 @@ enum JournalStatus {
 // ─── AP TRACKER ──────────────────────────────────────────────────────────────
 
 model ApInvoice {
-  id          String      @id @default(cuid())
+  id          String   @id @default(cuid())
   entityId    String
   clientId    String?
   accountId   String?
@@ -213,18 +211,18 @@ model ApInvoice {
   invoiceNo   String
   invoiceDate DateTime
   dueDate     DateTime
-  amount      Decimal     @db.Decimal(18, 2)
-  amountPaid  Decimal     @default(0) @db.Decimal(18, 2)
-  status      ApStatus    @default(PENDING)
+  amount      Decimal  @db.Decimal(18, 2)
+  amountPaid  Decimal  @default(0) @db.Decimal(18, 2)
+  status      ApStatus @default(PENDING)
   notes       String?
   attachment  String?
   paidAt      DateTime?
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
-  entity  LegalEntity @relation(fields: [entityId], references: [id], onDelete: Cascade)
-  client  Client?     @relation(fields: [clientId], references: [id])
-  account Account?    @relation(fields: [accountId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  entity   LegalEntity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  client   Client?     @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  account  Account?    @relation(fields: [accountId], references: [id], onDelete: SetNull)
   payments ApPayment[]
 
   @@map("ap_invoices")
@@ -239,7 +237,7 @@ model ApPayment {
   reference String?
   createdAt DateTime @default(now())
 
-  invoice ApInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  invoice ApInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
 
   @@map("ap_payments")
 }
@@ -255,7 +253,7 @@ enum ApStatus {
 // ─── PAYROLL ─────────────────────────────────────────────────────────────────
 
 model Employee {
-  id              String         @id @default(cuid())
+  id              String       @id @default(cuid())
   entityId        String
   employeeNo      String
   firstName       String
@@ -267,18 +265,18 @@ model Employee {
   startDate       DateTime
   endDate         DateTime?
   payType         PayType
-  salary          Decimal?       @db.Decimal(18, 2)
-  hourlyRate      Decimal?       @db.Decimal(10, 2)
+  salary          Decimal?     @db.Decimal(18, 2)
+  hourlyRate      Decimal?     @db.Decimal(10, 2)
   filingStatus    FilingStatus
-  allowances      Int            @default(1)
-  state           String         @default("NY")
-  retirement401k  Decimal        @default(0) @db.Decimal(5, 4)
-  healthDeduction Decimal        @default(0) @db.Decimal(10, 2)
-  isActive        Boolean        @default(true)
+  allowances      Int          @default(1)
+  state           String       @default("NY")
+  retirement401k  Decimal      @default(0) @db.Decimal(5, 4)
+  healthDeduction Decimal      @default(0) @db.Decimal(10, 2)
+  isActive        Boolean      @default(true)
   department      String?
   jobTitle        String?
-  createdAt       DateTime       @default(now())
-  updatedAt       DateTime       @updatedAt
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
 
   entity      LegalEntity  @relation(fields: [entityId], references: [id], onDelete: Cascade)
   payrollRuns PayrollRun[]
@@ -289,49 +287,49 @@ model Employee {
 }
 
 model PayrollRun {
-  id           String        @id @default(cuid())
-  entityId     String
-  employeeId   String
-  periodStart  DateTime
-  periodEnd    DateTime
-  payDate      DateTime
-  grossPay     Decimal       @db.Decimal(18, 2)
-  fedTax       Decimal       @db.Decimal(18, 2)
-  stateTax     Decimal       @db.Decimal(18, 2)
-  ssTax        Decimal       @db.Decimal(18, 2)
-  medicareTax  Decimal       @db.Decimal(18, 2)
-  retirement   Decimal       @default(0) @db.Decimal(18, 2)
-  healthDed    Decimal       @default(0) @db.Decimal(18, 2)
-  otherDed     Decimal       @default(0) @db.Decimal(18, 2)
-  netPay       Decimal       @db.Decimal(18, 2)
-  hoursWorked  Decimal?      @db.Decimal(6, 2)
-  status       PayrollStatus @default(DRAFT)
-  createdAt    DateTime      @default(now())
+  id          String        @id @default(cuid())
+  entityId    String
+  employeeId  String
+  periodStart DateTime
+  periodEnd   DateTime
+  payDate     DateTime
+  grossPay    Decimal       @db.Decimal(18, 2)
+  fedTax      Decimal       @db.Decimal(18, 2)
+  stateTax    Decimal       @db.Decimal(18, 2)
+  ssTax       Decimal       @db.Decimal(18, 2)
+  medicareTax Decimal       @db.Decimal(18, 2)
+  retirement  Decimal       @default(0) @db.Decimal(18, 2)
+  healthDed   Decimal       @default(0) @db.Decimal(18, 2)
+  otherDed    Decimal       @default(0) @db.Decimal(18, 2)
+  netPay      Decimal       @db.Decimal(18, 2)
+  hoursWorked Decimal?      @db.Decimal(6, 2)
+  status      PayrollStatus @default(DRAFT)
+  createdAt   DateTime      @default(now())
 
   entity   LegalEntity @relation(fields: [entityId], references: [id], onDelete: Cascade)
-  employee Employee    @relation(fields: [employeeId], references: [id])
+  employee Employee    @relation(fields: [employeeId], references: [id], onDelete: Restrict)
 
   @@map("payroll_runs")
 }
 
 model W2Record {
-  id           String   @id @default(cuid())
+  id           String    @id @default(cuid())
   employeeId   String
   taxYear      Int
-  box1Wages    Decimal  @db.Decimal(18, 2)
-  box2FedTax   Decimal  @db.Decimal(18, 2)
-  box3SsWages  Decimal  @db.Decimal(18, 2)
-  box4SsTax    Decimal  @db.Decimal(18, 2)
-  box5MedWages Decimal  @db.Decimal(18, 2)
-  box6MedTax   Decimal  @db.Decimal(18, 2)
+  box1Wages    Decimal   @db.Decimal(18, 2)
+  box2FedTax   Decimal   @db.Decimal(18, 2)
+  box3SsWages  Decimal   @db.Decimal(18, 2)
+  box4SsTax    Decimal   @db.Decimal(18, 2)
+  box5MedWages Decimal   @db.Decimal(18, 2)
+  box6MedTax   Decimal   @db.Decimal(18, 2)
   box12Code    String?
-  box12Amount  Decimal? @db.Decimal(18, 2)
-  box13Retire  Boolean  @default(false)
-  status       String   @default("DRAFT")
+  box12Amount  Decimal?  @db.Decimal(18, 2)
+  box13Retire  Boolean   @default(false)
+  status       String    @default("DRAFT")
   filedAt      DateTime?
-  createdAt    DateTime @default(now())
+  createdAt    DateTime  @default(now())
 
-  employee Employee @relation(fields: [employeeId], references: [id])
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
 
   @@unique([employeeId, taxYear])
   @@map("w2_records")
@@ -360,14 +358,14 @@ enum PayrollStatus {
 // ─── BUDGET & MIS ────────────────────────────────────────────────────────────
 
 model Budget {
-  id        String   @id @default(cuid())
-  entityId  String
-  name      String
+  id         String   @id @default(cuid())
+  entityId   String
+  name       String
   fiscalYear Int
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
 
-  entity LegalEntity  @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  entity LegalEntity @relation(fields: [entityId], references: [id], onDelete: Cascade)
   lines  BudgetLine[]
 
   @@unique([entityId, fiscalYear, name])
@@ -382,7 +380,7 @@ model BudgetLine {
   amount    Decimal @db.Decimal(18, 2)
 
   budget  Budget  @relation(fields: [budgetId], references: [id], onDelete: Cascade)
-  account Account @relation(fields: [accountId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  account Account @relation(fields: [accountId], references: [id], onDelete: Restrict)
 
   @@unique([budgetId, accountId, month])
   @@map("budget_lines")
@@ -391,16 +389,16 @@ model BudgetLine {
 // ─── IIF IMPORTS ─────────────────────────────────────────────────────────────
 
 model IifImport {
-  id          String   @id @default(cuid())
-  entityId    String
-  filename    String
-  type        String
-  rawContent  String
-  rowCount    Int      @default(0)
-  status      String   @default("PENDING")
-  errors      String?
-  importedAt  DateTime?
-  createdAt   DateTime @default(now())
+  id         String    @id @default(cuid())
+  entityId   String
+  filename   String
+  type       String
+  rawContent String
+  rowCount   Int       @default(0)
+  status     String    @default("PENDING")
+  errors     String?
+  importedAt DateTime?
+  createdAt  DateTime  @default(now())
 
   entity LegalEntity @relation(fields: [entityId], references: [id], onDelete: Cascade)
 
@@ -410,19 +408,19 @@ model IifImport {
 // ─── AUDIT LOG ───────────────────────────────────────────────────────────────
 
 model AuditLog {
-  id        String   @id @default(cuid())
-  entityId  String
-  userId    String?
-  action    String
-  resource  String
+  id         String   @id @default(cuid())
+  entityId   String
+  userId     String?
+  action     String
+  resource   String
   resourceId String?
-  oldValue  String?
-  newValue  String?
-  ipAddress String?
-  createdAt DateTime @default(now())
+  oldValue   String?
+  newValue   String?
+  ipAddress  String?
+  createdAt  DateTime @default(now())
 
   entity LegalEntity @relation(fields: [entityId], references: [id], onDelete: Cascade)
-  user   User?       @relation(fields: [userId], references: [id])
+  user   User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   @@map("audit_logs")
 }
