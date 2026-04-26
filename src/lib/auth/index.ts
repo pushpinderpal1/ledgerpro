@@ -2,7 +2,7 @@ import { SignJWT, jwtVerify } from 'jose'
 import bcrypt from 'bcryptjs'
 import { cookies } from 'next/headers'
 import { NextRequest, NextResponse } from 'next/server'
-import { db } from './db'
+import { db } from '../db'
 import { EntityRole } from '@prisma/client'
 
 const SECRET = new TextEncoder().encode(process.env.JWT_SECRET!)
