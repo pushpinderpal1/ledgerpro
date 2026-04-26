@@ -1,0 +1,412 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider          = "postgresql"
+  url               = env("DATABASE_URL")
+  directUrl         = env("DIRECT_URL")
+  relationMode      = "prisma"
+}
+
+// ─── TENANCY LAYER ───────────────────────────────────────────────────────────
+
+model LegalEntity {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  taxId       String?
+  address     String?
+  phone       String?
+  email       String?
+  currency    String   @default("USD")
+  fiscalMonth Int      @default(1)
+  logo        String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  userAccess    EntityAccess[]
+  accounts      Account[]
+  journalEntries JournalEntry[]
+  apInvoices    ApInvoice[]
+  employees     Employee[]
+  payrollRuns   PayrollRun[]
+  budgets       Budget[]
+  clients       Client[]
+  iifImports    IifImport[]
+  auditLogs     AuditLog[]
+
+  @@map("legal_entities")
+}
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  name          String
+  passwordHash  String
+  avatarUrl     String?
+  isSuperAdmin  Boolean   @default(false)
+  isActive      Boolean   @default(true)
+  lastLoginAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  entityAccess  EntityAccess[]
+  auditLogs     AuditLog[]
+  sessions      Session[]
+
+  @@map("users")
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model EntityAccess {
+  id           String      @id @default(cuid())
+  userId       String
+  entityId     String
+  role         EntityRole
+  isActive     Boolean     @default(true)
+  grantedAt    DateTime    @default(now())
+  grantedBy    String?
+
+  user   User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  entity LegalEntity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, entityId])
+  @@map("entity_access")
+}
+
+enum EntityRole {
+  OWNER        // Full control including delete entity
+  ADMIN        // All ops except delete entity
+  ACCOUNTANT   // All accounting ops, no user mgmt
+  AUDITOR      // Read-only all modules
+  AP_CLERK     // AP tracker only
+  PAYROLL_CLERK // Payroll module only
+  CLIENT_VIEW  // Read-only selected reports
+}
+
+// ─── CLIENTS (within entity) ──────────────────────────────────────────────────
+
+model Client {
+  id          String   @id @default(cuid())
+  entityId    String
+  code        String
+  name        String
+  contactName String?
+  email       String?
+  phone       String?
+  address     String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  entity     LegalEntity  @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  apInvoices ApInvoice[]
+
+  @@unique([entityId, code])
+  @@map("clients")
+}
+
+// ─── CHART OF ACCOUNTS ───────────────────────────────────────────────────────
+
+model Account {
+  id          String      @id @default(cuid())
+  entityId    String
+  code        String
+  name        String
+  type        AccountType
+  subType     String?
+  description String?
+  parentId    String?
+  isActive    Boolean     @default(true)
+  isBankAccount Boolean   @default(false)
+  taxCode     String?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  entity       LegalEntity  @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  parent       Account?     @relation("AccountHierarchy", fields: [parentId], references: [id])
+  children     Account[]    @relation("AccountHierarchy")
+  journalLines JournalLine[]
+  apInvoices   ApInvoice[]
+  budgetLines  BudgetLine[]
+
+  @@unique([entityId, code])
+  @@map("accounts")
+}
+
+enum AccountType {
+  ASSET
+  LIABILITY
+  EQUITY
+  REVENUE
+  EXPENSE
+  COGS
+}
+
+// ─── JOURNAL ENTRIES ─────────────────────────────────────────────────────────
+
+model JournalEntry {
+  id          String        @id @default(cuid())
+  entityId    String
+  ref         String
+  date        DateTime
+  description String
+  memo        String?
+  status      JournalStatus @default(DRAFT)
+  source      String?       // MANUAL, IIF_IMPORT, PAYROLL, AP
+  recurringId String?
+  createdBy   String?
+  postedAt    DateTime?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  entity LegalEntity   @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  lines  JournalLine[]
+
+  @@unique([entityId, ref])
+  @@map("journal_entries")
+}
+
+model JournalLine {
+  id          String  @id @default(cuid())
+  entryId     String
+  accountId   String
+  description String?
+  debit       Decimal @default(0) @db.Decimal(18, 2)
+  credit      Decimal @default(0) @db.Decimal(18, 2)
+  lineOrder   Int     @default(0)
+
+  entry   JournalEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  account Account      @relation(fields: [accountId], references: [id])
+
+  @@map("journal_lines")
+}
+
+enum JournalStatus {
+  DRAFT
+  POSTED
+  VOID
+  RECURRING
+}
+
+// ─── AP TRACKER ──────────────────────────────────────────────────────────────
+
+model ApInvoice {
+  id          String      @id @default(cuid())
+  entityId    String
+  clientId    String?
+  accountId   String?
+  vendor      String
+  invoiceNo   String
+  invoiceDate DateTime
+  dueDate     DateTime
+  amount      Decimal     @db.Decimal(18, 2)
+  amountPaid  Decimal     @default(0) @db.Decimal(18, 2)
+  status      ApStatus    @default(PENDING)
+  notes       String?
+  attachment  String?
+  paidAt      DateTime?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  entity  LegalEntity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  client  Client?     @relation(fields: [clientId], references: [id])
+  account Account?    @relation(fields: [accountId], references: [id])
+  payments ApPayment[]
+
+  @@map("ap_invoices")
+}
+
+model ApPayment {
+  id        String   @id @default(cuid())
+  invoiceId String
+  amount    Decimal  @db.Decimal(18, 2)
+  paidOn    DateTime
+  method    String?
+  reference String?
+  createdAt DateTime @default(now())
+
+  invoice ApInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@map("ap_payments")
+}
+
+enum ApStatus {
+  PENDING
+  PARTIALLY_PAID
+  PAID
+  OVERDUE
+  VOID
+}
+
+// ─── PAYROLL ─────────────────────────────────────────────────────────────────
+
+model Employee {
+  id              String         @id @default(cuid())
+  entityId        String
+  employeeNo      String
+  firstName       String
+  lastName        String
+  ssnEncrypted    String?
+  email           String?
+  phone           String?
+  address         String?
+  startDate       DateTime
+  endDate         DateTime?
+  payType         PayType
+  salary          Decimal?       @db.Decimal(18, 2)
+  hourlyRate      Decimal?       @db.Decimal(10, 2)
+  filingStatus    FilingStatus
+  allowances      Int            @default(1)
+  state           String         @default("NY")
+  retirement401k  Decimal        @default(0) @db.Decimal(5, 4)
+  healthDeduction Decimal        @default(0) @db.Decimal(10, 2)
+  isActive        Boolean        @default(true)
+  department      String?
+  jobTitle        String?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  entity      LegalEntity  @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  payrollRuns PayrollRun[]
+  w2Records   W2Record[]
+
+  @@unique([entityId, employeeNo])
+  @@map("employees")
+}
+
+model PayrollRun {
+  id           String        @id @default(cuid())
+  entityId     String
+  employeeId   String
+  periodStart  DateTime
+  periodEnd    DateTime
+  payDate      DateTime
+  grossPay     Decimal       @db.Decimal(18, 2)
+  fedTax       Decimal       @db.Decimal(18, 2)
+  stateTax     Decimal       @db.Decimal(18, 2)
+  ssTax        Decimal       @db.Decimal(18, 2)
+  medicareTax  Decimal       @db.Decimal(18, 2)
+  retirement   Decimal       @default(0) @db.Decimal(18, 2)
+  healthDed    Decimal       @default(0) @db.Decimal(18, 2)
+  otherDed     Decimal       @default(0) @db.Decimal(18, 2)
+  netPay       Decimal       @db.Decimal(18, 2)
+  hoursWorked  Decimal?      @db.Decimal(6, 2)
+  status       PayrollStatus @default(DRAFT)
+  createdAt    DateTime      @default(now())
+
+  entity   LegalEntity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  employee Employee    @relation(fields: [employeeId], references: [id])
+
+  @@map("payroll_runs")
+}
+
+model W2Record {
+  id           String   @id @default(cuid())
+  employeeId   String
+  taxYear      Int
+  box1Wages    Decimal  @db.Decimal(18, 2)
+  box2FedTax   Decimal  @db.Decimal(18, 2)
+  box3SsWages  Decimal  @db.Decimal(18, 2)
+  box4SsTax    Decimal  @db.Decimal(18, 2)
+  box5MedWages Decimal  @db.Decimal(18, 2)
+  box6MedTax   Decimal  @db.Decimal(18, 2)
+  box12Code    String?
+  box12Amount  Decimal? @db.Decimal(18, 2)
+  box13Retire  Boolean  @default(false)
+  status       String   @default("DRAFT")
+  filedAt      DateTime?
+  createdAt    DateTime @default(now())
+
+  employee Employee @relation(fields: [employeeId], references: [id])
+
+  @@unique([employeeId, taxYear])
+  @@map("w2_records")
+}
+
+enum PayType { SALARY HOURLY COMMISSION }
+enum FilingStatus { SINGLE MARRIED MFS HH }
+enum PayrollStatus { DRAFT APPROVED PAID VOID }
+
+// ─── BUDGET & MIS ────────────────────────────────────────────────────────────
+
+model Budget {
+  id        String   @id @default(cuid())
+  entityId  String
+  name      String
+  fiscalYear Int
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  entity LegalEntity  @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  lines  BudgetLine[]
+
+  @@unique([entityId, fiscalYear, name])
+  @@map("budgets")
+}
+
+model BudgetLine {
+  id        String  @id @default(cuid())
+  budgetId  String
+  accountId String
+  month     Int
+  amount    Decimal @db.Decimal(18, 2)
+
+  budget  Budget  @relation(fields: [budgetId], references: [id], onDelete: Cascade)
+  account Account @relation(fields: [accountId], references: [id])
+
+  @@unique([budgetId, accountId, month])
+  @@map("budget_lines")
+}
+
+// ─── IIF IMPORTS ─────────────────────────────────────────────────────────────
+
+model IifImport {
+  id          String   @id @default(cuid())
+  entityId    String
+  filename    String
+  type        String
+  rawContent  String
+  rowCount    Int      @default(0)
+  status      String   @default("PENDING")
+  errors      String?
+  importedAt  DateTime?
+  createdAt   DateTime @default(now())
+
+  entity LegalEntity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+
+  @@map("iif_imports")
+}
+
+// ─── AUDIT LOG ───────────────────────────────────────────────────────────────
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  entityId  String
+  userId    String?
+  action    String
+  resource  String
+  resourceId String?
+  oldValue  String?
+  newValue  String?
+  ipAddress String?
+  createdAt DateTime @default(now())
+
+  entity LegalEntity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  user   User?       @relation(fields: [userId], references: [id])
+
+  @@map("audit_logs")
+}
