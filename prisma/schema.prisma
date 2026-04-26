@@ -337,9 +337,25 @@ model W2Record {
   @@map("w2_records")
 }
 
-enum PayType { SALARY HOURLY COMMISSION }
-enum FilingStatus { SINGLE MARRIED MFS HH }
-enum PayrollStatus { DRAFT APPROVED PAID VOID }
+enum PayType {
+  SALARY
+  HOURLY
+  COMMISSION
+}
+
+enum FilingStatus {
+  SINGLE
+  MARRIED
+  MFS
+  HH
+}
+
+enum PayrollStatus {
+  DRAFT
+  APPROVED
+  PAID
+  VOID
+}
 
 // ─── BUDGET & MIS ────────────────────────────────────────────────────────────
 
