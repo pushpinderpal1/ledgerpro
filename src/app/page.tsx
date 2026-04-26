@@ -1220,7 +1220,7 @@ function SettingsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') =>
           <div><label style={S.label}>Email</label><input style={S.input} type="email" value={form.email} onChange={e=>setForm(f=>({...f,email:e.target.value}))} /></div>
           <div><label style={S.label}>Currency</label>
             <select style={S.select} value={form.currency} onChange={e=>setForm(f=>({...f,currency:e.target.value}))}>
-              {['USD','EUR','GBP','CAD','AUD'].map(c=><option key={c}>{c}</option>)}
+              {['USD','EUR','GBP','CAD','AUD','INR'].map(c=><option key={c}>{c}</option>)}
             </select>
           </div>
           <div><label style={S.label}>Fiscal year start</label>
@@ -1256,7 +1256,7 @@ function NewEntityForm({ onCreated, showToast }: { onCreated: (e: Entity) => voi
       <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:10}}>
         <input style={{...S.input,marginBottom:0}} value={form.taxId} onChange={e=>setForm(f=>({...f,taxId:e.target.value}))} placeholder="Tax ID / EIN" />
         <select style={S.select} value={form.currency} onChange={e=>setForm(f=>({...f,currency:e.target.value}))}>
-          {['USD','EUR','GBP','CAD'].map(c=><option key={c}>{c}</option>)}
+          {['USD','EUR','GBP','CAD','INR'].map(c=><option key={c}>{c}</option>)}
         </select>
       </div>
       <button style={{...S.btn,...S.btnPrimary,width:'100%',justifyContent:'center',opacity:loading?0.7:1}} disabled={loading||!form.name} onClick={save}>Create entity</button>
