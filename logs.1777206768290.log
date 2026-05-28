@@ -1,0 +1,14 @@
+2026-04-26T12:12:52.941382181Z [err]  npm warn config production Use `--omit=dev` instead.
+2026-04-26T12:12:53.214042217Z [inf]  Prisma schema loaded from prisma/schema.prisma
+2026-04-26T12:12:53.214047744Z [inf]  Datasource "db": PostgreSQL database "railway", schema "public" at "postgres.railway.internal:5432"
+2026-04-26T12:12:53.418082038Z [inf]  
+2026-04-26T12:12:53.418086741Z [inf]  1 migration found in prisma/migrations
+2026-04-26T12:12:53.418091705Z [inf]  
+2026-04-26T12:12:53.421790327Z [inf]  Starting Container
+2026-04-26T12:12:53.496757922Z [inf]  
+2026-04-26T12:12:53.496764239Z [inf]  No pending migrations to apply.
+2026-04-26T12:12:53.945573866Z [inf]     ▲ Next.js 14.1.3
+2026-04-26T12:12:53.945580690Z [inf]     - Local:        http://2fa52d5f8cd2:8080
+2026-04-26T12:12:53.945587640Z [inf]     - Network:      http://[fd12:d74:b35e:1:4000:c1:6217:d419]:8080
+2026-04-26T12:12:53.945597066Z [inf]  
+2026-04-26T12:12:53.945605293Z [inf]   ✓ Ready in 63ms
