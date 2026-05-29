@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, createContext, useContext } from 'rea
 // ─── Types ─────────────────────────────────────────────────────────────────────
 interface Entity { id: string; name: string; slug: string; currency: string; userAccess?: { role: string }[] }
 interface User   { id: string; name: string; email: string; isSuperAdmin: boolean }
-interface Account{ id: string; code: string; name: string; type: string; subType?: string }
+interface Account{ id: string; code: string; name: string; type: string; subType?: string; isBankAccount?: boolean }
 interface JournalEntry { id: string; ref: string; date: string; description: string; status: string; lines: JournalLine[] }
 interface JournalLine  { id: string; accountId: string; account: { code: string; name: string }; debit: number; credit: number }
 interface ApInvoice { id: string; vendor: string; invoiceNo: string; dueDate: string; amount: number; balance: number; status: string; agingBucket: string; daysOverdue: number }
@@ -36,6 +36,8 @@ const MODULE_ACCESS: Record<string, string[]> = {
   iif:        ['OWNER','ADMIN','ACCOUNTANT'],
   budget:     ['OWNER','ADMIN','ACCOUNTANT','AUDITOR','CLIENT_VIEW'],
   ap:         ['OWNER','ADMIN','ACCOUNTANT','AP_CLERK'],
+  payments:   ['OWNER','ADMIN','ACCOUNTANT','AP_CLERK'],
+  recon:      ['OWNER','ADMIN','ACCOUNTANT','AUDITOR'],
   payroll:    ['OWNER','ADMIN','PAYROLL_CLERK'],
   w2:         ['OWNER','ADMIN','PAYROLL_CLERK'],
   users:      ['OWNER','ADMIN'],
@@ -82,6 +84,8 @@ export default function LedgerProApp() {
     { id: 'iif',       label: 'QB IIF',            icon: '⇄' },
     { id: 'budget',    label: 'Budget & MIS',       icon: '◈' },
     { id: 'ap',        label: 'AP Tracker',         icon: '◎' },
+    { id: 'payments',  label: 'Payments',           icon: '✓' },
+    { id: 'recon',     label: 'Bank Recon',         icon: '↔' },
     { id: 'payroll',   label: 'Payroll',            icon: '◷' },
     { id: 'w2',        label: 'W-2 / 1040-K',       icon: '◻' },
     { id: 'users',     label: 'User Management',    icon: '◉' },
@@ -193,6 +197,8 @@ export default function LedgerProApp() {
                 {page === 'iif'       && <IifPage        showToast={showToast} />}
                 {page === 'budget'    && <BudgetPage     showToast={showToast} />}
                 {page === 'ap'        && <ApPage         showToast={showToast} />}
+                {page === 'payments'  && <PaymentsPage   showToast={showToast} />}
+                {page === 'recon'     && <ReconPage      showToast={showToast} />}
                 {page === 'payroll'   && <PayrollPage    showToast={showToast} />}
                 {page === 'w2'        && <W2Page         showToast={showToast} />}
                 {page === 'users'     && <UsersPage      showToast={showToast} />}
@@ -1295,6 +1301,451 @@ function StatusBadge({ status }: { status: string }) {
   }
   const m = map[status] ?? { bg:'#f8fafc', color:'#475569', label: status }
   return <span style={{ padding:'2px 8px', borderRadius:20, fontSize:11, fontWeight:600, background:m.bg, color:m.color }}>{m.label}</span>
+}
+
+// ─── Payments (Write Cheque & ACH) ────────────────────────────────────────────
+interface Payment {
+  id: string
+  method: 'CHEQUE' | 'ACH'
+  status: 'DRAFT' | 'ISSUED' | 'CLEARED' | 'VOID'
+  payeeName: string
+  amount: number
+  paymentDate: string
+  memo?: string
+  chequeNo?: string
+  achTraceNo?: string
+  achBatchId?: string
+  bankAccount?: { code: string; name: string }
+}
+
+function PaymentsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => void }) {
+  const { currentEntity, role } = useApp()
+  const [payments, setPayments] = useState<Payment[]>([])
+  const [accounts, setAccounts] = useState<Account[]>([])
+  const [tab, setTab] = useState<'ALL'|'CHEQUE'|'ACH'>('ALL')
+  const [showForm, setShowForm] = useState(false)
+  const [method, setMethod] = useState<'CHEQUE'|'ACH'>('CHEQUE')
+  const [nextCheque, setNextCheque] = useState('')
+  const today = new Date().toISOString().slice(0,10)
+  const [form, setForm] = useState({
+    bankAccountId:'', payeeName:'', amount:'', paymentDate: today, memo:'',
+    expenseAccountId:'', chequeNo:'',
+    achRoutingNo:'', achAccountNo:'', achAccountType:'CHECKING' as 'CHECKING'|'SAVINGS', achEffectiveDate: today,
+  })
+  const canWrite = ['OWNER','ADMIN','ACCOUNTANT'].includes(role)
+
+  const load = useCallback(() => {
+    if (!currentEntity) return
+    const q = tab === 'ALL' ? '' : `&method=${tab}`
+    fetch(`/api/payments?entityId=${currentEntity.id}${q}`).then(r => r.json()).then(d => setPayments(d.payments ?? []))
+    fetch(`/api/accounts?entityId=${currentEntity.id}`).then(r => r.json()).then(setAccounts)
+  }, [currentEntity, tab])
+
+  useEffect(() => { load() }, [load])
+
+  // Pre-fetch next cheque number when bank account selected for cheque method
+  useEffect(() => {
+    if (!currentEntity || method !== 'CHEQUE' || !form.bankAccountId) { setNextCheque(''); return }
+    fetch(`/api/payments?entityId=${currentEntity.id}&nextCheque=${form.bankAccountId}`)
+      .then(r => r.json()).then(d => setNextCheque(d.nextChequeNo ?? ''))
+  }, [currentEntity, method, form.bankAccountId])
+
+  const bankAccounts = accounts.filter(a => a.isBankAccount)
+  const expenseAccounts = accounts.filter(a => a.type === 'EXPENSE' || a.type === 'COGS')
+
+  const resetForm = () => setForm({
+    bankAccountId:'', payeeName:'', amount:'', paymentDate: today, memo:'',
+    expenseAccountId:'', chequeNo:'',
+    achRoutingNo:'', achAccountNo:'', achAccountType:'CHECKING', achEffectiveDate: today,
+  })
+
+  const save = async (postNow: boolean) => {
+    if (!currentEntity) return
+    if (!form.bankAccountId)    return showToast('Pick a bank account', 'err')
+    if (!form.payeeName)        return showToast('Payee name required', 'err')
+    if (!parseFloat(form.amount)) return showToast('Amount required', 'err')
+    if (postNow && !form.expenseAccountId) return showToast('Expense account required to post', 'err')
+    if (method === 'ACH' && (!form.achRoutingNo || !form.achAccountNo))
+      return showToast('Routing & account number required for ACH', 'err')
+
+    const body: Record<string, unknown> = {
+      entityId: currentEntity.id, bankAccountId: form.bankAccountId, method,
+      payeeName: form.payeeName, amount: parseFloat(form.amount),
+      paymentDate: form.paymentDate, memo: form.memo || undefined,
+      expenseAccountId: form.expenseAccountId || undefined, postNow,
+    }
+    if (method === 'CHEQUE' && form.chequeNo) body.chequeNo = form.chequeNo
+    if (method === 'ACH') {
+      body.achRoutingNo = form.achRoutingNo
+      body.achAccountNo = form.achAccountNo
+      body.achAccountType = form.achAccountType
+      body.achEffectiveDate = form.achEffectiveDate
+    }
+    const res = await fetch('/api/payments', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) })
+    if (res.ok) {
+      showToast(postNow ? `${method === 'CHEQUE' ? 'Cheque' : 'ACH'} posted` : 'Saved as draft')
+      setShowForm(false); resetForm(); load()
+    } else {
+      const d = await res.json(); showToast(d.error ?? 'Error', 'err')
+    }
+  }
+
+  const postDraft = async (id: string) => {
+    if (!currentEntity) return
+    const res = await fetch('/api/payments', { method:'PATCH', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ entityId: currentEntity.id, paymentId: id, action: 'post' }) })
+    if (res.ok) { showToast('Posted to GL'); load() }
+    else { const d = await res.json(); showToast(d.error ?? 'Error', 'err') }
+  }
+
+  const voidPayment = async (id: string) => {
+    if (!currentEntity) return
+    const reason = prompt('Reason for voiding?')
+    if (!reason) return
+    const res = await fetch('/api/payments', { method:'PATCH', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ entityId: currentEntity.id, paymentId: id, action: 'void', reason }) })
+    if (res.ok) { showToast('Payment voided'); load() }
+    else { const d = await res.json(); showToast(d.error ?? 'Error', 'err') }
+  }
+
+  const STATUS_COLORS: Record<string, string> = { DRAFT:'#94a3b8', ISSUED:'#0891b2', CLEARED:'#16a34a', VOID:'#dc2626' }
+  const tabBtn = (id: 'ALL'|'CHEQUE'|'ACH', label: string) => (
+    <button onClick={() => setTab(id)} style={{ ...S.btn, ...(tab===id ? { background:'#0f172a', color:'#fff', borderColor:'#0f172a' } : {}) }}>{label}</button>
+  )
+
+  return (
+    <div>
+      <div style={S.pageActions}>
+        <div style={{ display:'flex', gap:8 }}>{tabBtn('ALL','All')}{tabBtn('CHEQUE','Cheques')}{tabBtn('ACH','ACH')}</div>
+        {canWrite && <button style={{ ...S.btn, ...S.btnPrimary }} onClick={() => setShowForm(o => !o)}>+ New payment</button>}
+      </div>
+
+      {showForm && (
+        <div style={{ ...S.card, marginBottom:16 }}>
+          <div style={S.cardHeader}>
+            New payment
+            <div style={{ display:'inline-flex', gap:8, marginLeft:16 }}>
+              <button onClick={() => setMethod('CHEQUE')} style={{ ...S.btn, ...(method==='CHEQUE' ? S.btnPrimary : {}) }}>Write cheque</button>
+              <button onClick={() => setMethod('ACH')} style={{ ...S.btn, ...(method==='ACH' ? S.btnPrimary : {}) }}>ACH</button>
+            </div>
+          </div>
+          <div style={S.formGrid}>
+            <div>
+              <label style={S.label}>Pay from (bank account)</label>
+              <select style={S.select} value={form.bankAccountId} onChange={e => setForm(f=>({...f, bankAccountId:e.target.value}))}>
+                <option value="">Select bank account…</option>
+                {bankAccounts.map(a => <option key={a.id} value={a.id}>{a.code} — {a.name}</option>)}
+              </select>
+              {bankAccounts.length === 0 && <div style={{ fontSize:11, color:'#dc2626', marginTop:4 }}>No bank accounts. Mark an account as bank account in Chart of Accounts.</div>}
+            </div>
+            <div><label style={S.label}>Pay to</label><input style={S.input} value={form.payeeName} onChange={e => setForm(f=>({...f, payeeName:e.target.value}))} placeholder="Payee name" /></div>
+            <div><label style={S.label}>Amount</label><input style={S.input} value={form.amount} onChange={e => setForm(f=>({...f, amount:e.target.value}))} placeholder="0.00" /></div>
+            <div><label style={S.label}>Payment date</label><input style={S.input} type="date" value={form.paymentDate} onChange={e => setForm(f=>({...f, paymentDate:e.target.value}))} /></div>
+            <div>
+              <label style={S.label}>Expense / offset account</label>
+              <select style={S.select} value={form.expenseAccountId} onChange={e => setForm(f=>({...f, expenseAccountId:e.target.value}))}>
+                <option value="">Select account…</option>
+                {expenseAccounts.map(a => <option key={a.id} value={a.id}>{a.code} — {a.name}</option>)}
+              </select>
+            </div>
+            <div><label style={S.label}>Memo</label><input style={S.input} value={form.memo} onChange={e => setForm(f=>({...f, memo:e.target.value}))} placeholder="Optional memo" /></div>
+
+            {method === 'CHEQUE' && (
+              <div>
+                <label style={S.label}>Cheque # {nextCheque && <span style={{ color:'#94a3b8', fontWeight:400 }}>(next: {nextCheque})</span>}</label>
+                <input style={S.input} value={form.chequeNo} onChange={e => setForm(f=>({...f, chequeNo:e.target.value}))} placeholder={nextCheque || 'Auto'} />
+              </div>
+            )}
+
+            {method === 'ACH' && (<>
+              <div><label style={S.label}>Routing # (9 digits)</label><input style={S.input} value={form.achRoutingNo} onChange={e => setForm(f=>({...f, achRoutingNo:e.target.value.replace(/\D/g,'').slice(0,9)}))} placeholder="123456789" /></div>
+              <div><label style={S.label}>Account #</label><input style={S.input} value={form.achAccountNo} onChange={e => setForm(f=>({...f, achAccountNo:e.target.value}))} placeholder="Will be masked to last 4" /></div>
+              <div>
+                <label style={S.label}>Account type</label>
+                <select style={S.select} value={form.achAccountType} onChange={e => setForm(f=>({...f, achAccountType: e.target.value as 'CHECKING'|'SAVINGS'}))}>
+                  <option value="CHECKING">Checking</option><option value="SAVINGS">Savings</option>
+                </select>
+              </div>
+              <div><label style={S.label}>Effective date</label><input style={S.input} type="date" value={form.achEffectiveDate} onChange={e => setForm(f=>({...f, achEffectiveDate:e.target.value}))} /></div>
+            </>)}
+          </div>
+          <div style={{ display:'flex', gap:8 }}>
+            <button style={{ ...S.btn, ...S.btnPrimary }} onClick={() => save(true)}>{method === 'CHEQUE' ? 'Save & post cheque' : 'Save & submit ACH'}</button>
+            <button style={S.btn} onClick={() => save(false)}>Save as draft</button>
+            <button style={S.btn} onClick={() => { setShowForm(false); resetForm() }}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      <div style={S.card}>
+        <table style={S.table}>
+          <thead><tr>{['Date','Method','#/Trace','Bank','Payee','Memo','Amount','Status',''].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
+          <tbody>
+            {payments.length === 0 && <tr><td style={{ ...S.td, textAlign:'center', color:'#94a3b8' }} colSpan={9}>No payments yet</td></tr>}
+            {payments.map(p => (
+              <tr key={p.id}>
+                <td style={S.td}>{fmtDate(p.paymentDate)}</td>
+                <td style={S.td}><span style={{ ...S.greenBadge, background: p.method==='CHEQUE' ? '#eff6ff' : '#fef3c7', color: p.method==='CHEQUE' ? '#1e40af' : '#92400e' }}>{p.method}</span></td>
+                <td style={{ ...S.td, fontFamily:'monospace', fontSize:11 }}>{p.method === 'CHEQUE' ? `#${p.chequeNo ?? ''}` : (p.achTraceNo ?? p.achBatchId ?? '')}</td>
+                <td style={{ ...S.td, fontSize:12, color:'#64748b' }}>{p.bankAccount ? `${p.bankAccount.code} ${p.bankAccount.name}` : ''}</td>
+                <td style={{ ...S.td, fontWeight:500 }}>{p.payeeName}</td>
+                <td style={{ ...S.td, fontSize:12, color:'#64748b' }}>{p.memo}</td>
+                <td style={{ ...S.td, textAlign:'right', fontWeight:600 }}>${fmt(p.amount)}</td>
+                <td style={S.td}><span style={{ ...S.greenBadge, background:'#f1f5f9', color: STATUS_COLORS[p.status] ?? '#475569' }}>{p.status}</span></td>
+                <td style={{ ...S.td, textAlign:'right' }}>
+                  {canWrite && p.status === 'DRAFT' && <button style={S.textBtn} onClick={() => postDraft(p.id)}>Post</button>}
+                  {canWrite && (p.status === 'DRAFT' || p.status === 'ISSUED') && <button style={{ ...S.textBtn, color:'#dc2626', marginLeft:8 }} onClick={() => voidPayment(p.id)}>Void</button>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+// ─── Bank Reconciliation ──────────────────────────────────────────────────────
+interface ReconSummary {
+  beginningBalance: number; endingBalance: number; clearedBalance: number
+  clearedCount: number; unclearedCount: number; difference: number; isBalanced: boolean
+}
+interface ReconLine {
+  id: string; date: string; ref: string; description: string
+  debit: number; credit: number; movement: number
+  clearedStatus: 'UNCLEARED'|'CLEARED'|'RECONCILED'; clearedDate: string | null; inThisRecon: boolean
+}
+interface StatementLine { id: string; date: string; description: string; amount: number; reference?: string; isMatched: boolean }
+interface ReconRecord { id: string; statementDate: string; beginningBalance: number; endingBalance: number; status: 'IN_PROGRESS'|'COMPLETED'; bankAccount?: { code: string; name: string } }
+interface ReconState { reconciliation: { id: string; statementDate: string; bankAccountId: string; status: string }; cleared: ReconLine[]; uncleared: ReconLine[]; statementLines: StatementLine[]; summary: ReconSummary }
+
+function ReconPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => void }) {
+  const { currentEntity, role } = useApp()
+  const [accounts, setAccounts] = useState<Account[]>([])
+  const [recons, setRecons] = useState<ReconRecord[]>([])
+  const [activeId, setActiveId] = useState<string | null>(null)
+  const [state, setState] = useState<ReconState | null>(null)
+  const [showStart, setShowStart] = useState(false)
+  const today = new Date().toISOString().slice(0,10)
+  const [startForm, setStartForm] = useState({
+    bankAccountId:'', statementDate: today, beginningBalance:'', endingBalance:'',
+    statementFile:'', statementContent:''
+  })
+  const canWrite = ['OWNER','ADMIN','ACCOUNTANT'].includes(role)
+
+  const loadList = useCallback(() => {
+    if (!currentEntity) return
+    fetch(`/api/recon?entityId=${currentEntity.id}`).then(r => r.json()).then(d => setRecons(d.reconciliations ?? []))
+    fetch(`/api/accounts?entityId=${currentEntity.id}`).then(r => r.json()).then(setAccounts)
+  }, [currentEntity])
+
+  const loadOne = useCallback((id: string) => {
+    if (!currentEntity) return
+    fetch(`/api/recon?entityId=${currentEntity.id}&id=${id}`).then(r => r.json()).then(setState)
+  }, [currentEntity])
+
+  useEffect(() => { loadList() }, [loadList])
+  useEffect(() => { if (activeId) loadOne(activeId) }, [activeId, loadOne])
+
+  const bankAccounts = accounts.filter(a => a.isBankAccount)
+
+  const onFileChosen = async (file: File | null) => {
+    if (!file) { setStartForm(f => ({ ...f, statementFile:'', statementContent:'' })); return }
+    const text = await file.text()
+    setStartForm(f => ({ ...f, statementFile: file.name, statementContent: text }))
+  }
+
+  const startRecon = async () => {
+    if (!currentEntity) return
+    if (!startForm.bankAccountId) return showToast('Pick a bank account', 'err')
+    const begin = parseFloat(startForm.beginningBalance), end = parseFloat(startForm.endingBalance)
+    if (isNaN(begin) || isNaN(end)) return showToast('Beginning and ending balances required', 'err')
+    const res = await fetch('/api/recon', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        entityId: currentEntity.id,
+        bankAccountId: startForm.bankAccountId,
+        statementDate: startForm.statementDate,
+        beginningBalance: begin, endingBalance: end,
+        statementFile: startForm.statementFile || undefined,
+        statementContent: startForm.statementContent || undefined,
+      })
+    })
+    if (res.ok) {
+      const data = await res.json()
+      showToast(startForm.statementContent ? `Started — parsed ${data.statementLines?.length ?? 0} statement lines` : 'Reconciliation started')
+      setShowStart(false); setStartForm({ bankAccountId:'', statementDate: today, beginningBalance:'', endingBalance:'', statementFile:'', statementContent:'' })
+      loadList(); setActiveId(data.reconciliation.id)
+    } else {
+      const d = await res.json(); showToast(d.error ?? 'Error', 'err')
+    }
+  }
+
+  const toggleClear = async (lineId: string, cleared: boolean, clearedDate?: string) => {
+    if (!currentEntity || !activeId) return
+    const res = await fetch('/api/recon', { method:'PATCH', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ entityId: currentEntity.id, action: 'clear', reconciliationId: activeId, journalLineId: lineId, cleared, clearedDate }) })
+    if (res.ok) setState(await res.json())
+    else { const d = await res.json(); showToast(d.error ?? 'Error', 'err') }
+  }
+
+  const autoMatch = async () => {
+    if (!currentEntity || !activeId) return
+    const res = await fetch('/api/recon', { method:'PATCH', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ entityId: currentEntity.id, action: 'autoMatch', reconciliationId: activeId }) })
+    if (res.ok) {
+      const data = await res.json()
+      showToast(`Auto-matched ${data.autoMatch?.matched ?? 0} of ${data.autoMatch?.totalStatementLines ?? 0} statement lines`)
+      setState(data)
+    } else { const d = await res.json(); showToast(d.error ?? 'Error', 'err') }
+  }
+
+  const finalize = async () => {
+    if (!currentEntity || !activeId) return
+    if (!state?.summary.isBalanced) return showToast(`Out of balance by ${fmt(state?.summary.difference ?? 0)}`, 'err')
+    if (!confirm('Finalize this reconciliation? Cleared lines will be locked.')) return
+    const res = await fetch('/api/recon', { method:'PATCH', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ entityId: currentEntity.id, action: 'finalize', reconciliationId: activeId }) })
+    if (res.ok) { showToast('Reconciliation completed'); loadList(); loadOne(activeId) }
+    else { const d = await res.json(); showToast(d.error ?? 'Error', 'err') }
+  }
+
+  // Detail view of one reconciliation
+  if (activeId && state) {
+    const isLocked = state.reconciliation.status === 'COMPLETED'
+    const { summary } = state
+    const allLines = [...state.cleared, ...state.uncleared].sort((a,b) => +new Date(a.date) - +new Date(b.date))
+
+    return (
+      <div>
+        <div style={S.pageActions}>
+          <button style={S.btn} onClick={() => { setActiveId(null); setState(null) }}>← Back to list</button>
+          <div style={{ display:'flex', gap:8 }}>
+            {!isLocked && canWrite && state.statementLines.length > 0 && <button style={S.btn} onClick={autoMatch}>Auto-match statement</button>}
+            {!isLocked && canWrite && <button style={{ ...S.btn, ...S.btnPrimary, opacity: summary.isBalanced ? 1 : 0.5 }} onClick={finalize} disabled={!summary.isBalanced}>Finalize reconciliation</button>}
+            {isLocked && <span style={{ ...S.greenBadge }}>COMPLETED</span>}
+          </div>
+        </div>
+
+        <div style={S.kpiGrid}>
+          {[
+            { label:'Beginning balance', value:`$${fmt(summary.beginningBalance)}`, color:'#475569' },
+            { label:'Cleared balance', value:`$${fmt(summary.clearedBalance)}`, color:'#0891b2' },
+            { label:'Statement ending', value:`$${fmt(summary.endingBalance)}`, color:'#475569' },
+            { label:'Difference', value:`$${fmt(summary.difference)}`, color: summary.isBalanced ? '#16a34a' : '#dc2626' },
+          ].map(k => <div key={k.label} style={S.kpiCard}><div style={{fontSize:11,color:'#94a3b8',marginBottom:4}}>{k.label}</div><div style={{fontSize:22,fontWeight:700,color:k.color}}>{k.value}</div></div>)}
+        </div>
+
+        {state.statementLines.length > 0 && (
+          <div style={{ ...S.card, marginBottom:16 }}>
+            <div style={S.cardHeader}>Statement lines ({state.statementLines.filter(s => s.isMatched).length} of {state.statementLines.length} matched)</div>
+            <table style={S.table}>
+              <thead><tr>{['Date','Description','Reference','Amount','Matched'].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
+              <tbody>{state.statementLines.map(sl => (
+                <tr key={sl.id}>
+                  <td style={S.td}>{fmtDate(sl.date)}</td>
+                  <td style={{ ...S.td, fontSize:12 }}>{sl.description}</td>
+                  <td style={{ ...S.td, fontFamily:'monospace', fontSize:11, color:'#64748b' }}>{sl.reference ?? ''}</td>
+                  <td style={{ ...S.td, textAlign:'right', color: sl.amount < 0 ? '#dc2626' : '#16a34a', fontWeight:600 }}>${fmt(sl.amount)}</td>
+                  <td style={S.td}>{sl.isMatched ? <span style={S.greenBadge}>matched</span> : <span style={{ color:'#94a3b8', fontSize:12 }}>—</span>}</td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+        )}
+
+        <div style={S.card}>
+          <div style={S.cardHeader}>Book transactions — tick to clear, set the date money cleared the bank</div>
+          <table style={S.table}>
+            <thead><tr>{['','Date','Ref','Description','Withdrawal','Deposit','Clearing date'].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
+            <tbody>
+              {allLines.length === 0 && <tr><td style={{ ...S.td, textAlign:'center', color:'#94a3b8' }} colSpan={7}>No book transactions in this period</td></tr>}
+              {allLines.map(l => {
+                const isCleared = l.inThisRecon && l.clearedStatus !== 'UNCLEARED'
+                return (
+                  <tr key={l.id} style={{ background: isCleared ? '#f0fdf4' : 'transparent' }}>
+                    <td style={S.td}>
+                      <input type="checkbox" checked={isCleared} disabled={isLocked || !canWrite}
+                        onChange={e => toggleClear(l.id, e.target.checked, e.target.checked ? (l.clearedDate ?? today) : undefined)} />
+                    </td>
+                    <td style={S.td}>{fmtDate(l.date)}</td>
+                    <td style={{ ...S.td, fontFamily:'monospace', fontSize:11 }}>{l.ref}</td>
+                    <td style={{ ...S.td, fontSize:12 }}>{l.description}</td>
+                    <td style={{ ...S.td, textAlign:'right', color:'#dc2626' }}>{l.credit > 0 ? `$${fmt(l.credit)}` : ''}</td>
+                    <td style={{ ...S.td, textAlign:'right', color:'#16a34a' }}>{l.debit > 0 ? `$${fmt(l.debit)}` : ''}</td>
+                    <td style={S.td}>
+                      {isCleared ? (
+                        <input type="date" style={{ ...S.input, padding:'4px 6px', fontSize:12 }}
+                          value={l.clearedDate ? l.clearedDate.slice(0,10) : today}
+                          disabled={isLocked || !canWrite}
+                          onChange={e => toggleClear(l.id, true, e.target.value)} />
+                      ) : <span style={{ color:'#94a3b8', fontSize:12 }}>—</span>}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    )
+  }
+
+  // List view
+  return (
+    <div>
+      <div style={S.pageActions}>
+        <span />
+        {canWrite && <button style={{ ...S.btn, ...S.btnPrimary }} onClick={() => setShowStart(o => !o)}>+ Start reconciliation</button>}
+      </div>
+
+      {showStart && (
+        <div style={{ ...S.card, marginBottom:16 }}>
+          <div style={S.cardHeader}>Start a new reconciliation</div>
+          <div style={S.formGrid}>
+            <div>
+              <label style={S.label}>Bank account</label>
+              <select style={S.select} value={startForm.bankAccountId} onChange={e => setStartForm(f=>({...f, bankAccountId:e.target.value}))}>
+                <option value="">Select bank account…</option>
+                {bankAccounts.map(a => <option key={a.id} value={a.id}>{a.code} — {a.name}</option>)}
+              </select>
+            </div>
+            <div><label style={S.label}>Statement date</label><input style={S.input} type="date" value={startForm.statementDate} onChange={e => setStartForm(f=>({...f, statementDate:e.target.value}))} /></div>
+            <div><label style={S.label}>Beginning balance</label><input style={S.input} value={startForm.beginningBalance} onChange={e => setStartForm(f=>({...f, beginningBalance:e.target.value}))} placeholder="0.00" /></div>
+            <div><label style={S.label}>Ending balance (from statement)</label><input style={S.input} value={startForm.endingBalance} onChange={e => setStartForm(f=>({...f, endingBalance:e.target.value}))} placeholder="0.00" /></div>
+            <div style={{ gridColumn:'1 / -1' }}>
+              <label style={S.label}>Upload statement (optional — CSV or OFX/QFX)</label>
+              <input type="file" accept=".csv,.ofx,.qfx,text/csv" onChange={e => onFileChosen(e.target.files?.[0] ?? null)} style={{ display:'block', marginTop:4 }} />
+              {startForm.statementFile && <div style={{ fontSize:11, color:'#16a34a', marginTop:4 }}>✓ {startForm.statementFile} — will auto-match on start</div>}
+              <div style={{ fontSize:11, color:'#94a3b8', marginTop:4 }}>If no file, you can still reconcile manually by ticking entries below.</div>
+            </div>
+          </div>
+          <div style={{ display:'flex', gap:8 }}>
+            <button style={{ ...S.btn, ...S.btnPrimary }} onClick={startRecon}>Start</button>
+            <button style={S.btn} onClick={() => setShowStart(false)}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      <div style={S.card}>
+        <table style={S.table}>
+          <thead><tr>{['Statement date','Bank account','Beginning','Ending','Status',''].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
+          <tbody>
+            {recons.length === 0 && <tr><td style={{ ...S.td, textAlign:'center', color:'#94a3b8' }} colSpan={6}>No reconciliations yet</td></tr>}
+            {recons.map(r => (
+              <tr key={r.id}>
+                <td style={S.td}>{fmtDate(r.statementDate)}</td>
+                <td style={S.td}>{r.bankAccount ? `${r.bankAccount.code} — ${r.bankAccount.name}` : ''}</td>
+                <td style={{ ...S.td, textAlign:'right' }}>${fmt(r.beginningBalance)}</td>
+                <td style={{ ...S.td, textAlign:'right' }}>${fmt(r.endingBalance)}</td>
+                <td style={S.td}><span style={{ ...S.greenBadge, background: r.status==='COMPLETED' ? '#f0fdf4' : '#fef3c7', color: r.status==='COMPLETED' ? '#166534' : '#92400e' }}>{r.status}</span></td>
+                <td style={{ ...S.td, textAlign:'right' }}><button style={S.textBtn} onClick={() => setActiveId(r.id)}>Open →</button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
