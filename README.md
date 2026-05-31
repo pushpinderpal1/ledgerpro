@@ -1,25 +1,47 @@
-# LedgerPro Audit Trail module
+# LedgerPro — Fixed Asset Register module
 
-Adds a comprehensive audit trail: centralized logging helper with redaction
-of sensitive fields, a query API with filters and pagination, and a
-QuickBooks-style UI page accessible to OWNER / ADMIN / AUDITOR.
+Adds a complete fixed-asset register with depreciation calculation and
+automatic GL posting. Net book value flows into the Balance Sheet,
+depreciation expense flows into the P&L — both happen automatically because
+the depreciation engine creates real journal entries.
+
+## Domain model
+
+Three Prisma models (additive — no breaking changes):
+
+- **AssetCategory** — depreciation policy: method (straight-line or
+  declining balance), useful life, annual rate, **plus three GL account
+  links**: Fixed Asset (cost), Accumulated Depreciation (contra-asset),
+  Depreciation Expense.
+- **FixedAsset** — individual assets: number, description, acquisition date,
+  cost, salvage value, useful life, location, serial number, status
+  (`ACTIVE` / `DISPOSED` / `FULLY_DEPRECIATED`).
+- **DepreciationEntry** — one row per asset per period, linking to the
+  shared journal entry that booked the run. Unique on `(fixedAssetId,
+  periodEnd)` for idempotency.
+
+Two new enums: `DepreciationMethod` (STRAIGHT_LINE | DECLINING_BALANCE)
+and `AssetStatus`.
 
 ## What's in this zip
 
-- `src/lib/audit/index.ts` — new helper. Use `logAudit({ entityId, userId,
-  action, resource, resourceId, before, after, request })` from any
-  state-changing operation. Auto-redacts passwords, secrets, ACH numbers, etc.
-- `src/app/api/audit/route.ts` — new GET endpoint. Filters by date range,
-  action, resource, user; paginated; returns aggregate facets so the UI can
-  populate filter dropdowns.
-- `src/app/api/periods/route.ts` — replaces existing. Now logs PERIOD_LOCKED
-  and PERIOD_RELEASED events (previously unaudited).
-- `src/lib/auth/index.ts` — replaces existing. Adds `audit:read` permission
-  (AUDITOR-level).
-- `src/app/page.tsx` — replaces existing. Adds the **Audit Trail** sidebar
-  item and full page with filter bar, paginated table, before/after diff
-  expansion, and CSV export.
-- `tests/audit-sanitize.test.ts` — 9 new tests for the sanitizer logic.
+- `prisma/schema.prisma` — replaces existing. Adds 3 models, 2 enums,
+  back-relations on LegalEntity and Account.
+- `prisma/migrations/0005_fixed_assets/migration.sql` — additive, safe.
+- `src/lib/assets/depreciation.ts` — pure math: monthlyDepreciation,
+  projectSchedule, depreciationDueThrough. No DB deps, fully testable.
+- `src/lib/assets/index.ts` — DB-backed engine: runDepreciation,
+  disposeAsset, getAssetWithAccum. Period-lock-aware, idempotent.
+- `src/lib/auth/index.ts` — replaces existing. Adds `assets:read`
+  (AUDITOR) and `assets:write` (ACCOUNTANT) permissions.
+- `src/app/api/asset-categories/route.ts` — full CRUD with audit logging.
+- `src/app/api/fixed-assets/route.ts` — GET/POST + PATCH with three
+  actions: `depreciate`, `dispose`, `edit`.
+- `src/app/page.tsx` — replaces existing. Adds Fixed Assets sidebar item
+  and full UI with two tabs (Register / Categories), asset detail with
+  depreciation schedule, disposal modal, and depreciation-run modal.
+- `tests/depreciation.test.ts` — 17 unit tests covering straight-line,
+  declining-balance, salvage floors, catch-up, and date helpers.
 
 ## Deploy steps
 
@@ -27,53 +49,81 @@ QuickBooks-style UI page accessible to OWNER / ADMIN / AUDITOR.
 2. Commit + push:
    ```
    git add -A
-   git commit -m "Add audit trail module"
+   git commit -m "Fixed Asset Register module"
    git push
    ```
-3. No new env vars, no database migrations, no new dependencies.
+3. Railway will apply migration `0005_fixed_assets` automatically.
+4. **No new npm dependencies.** No env-var changes.
 
-## What you'll see
+## How to use it
 
-- New **Audit Trail** item in the sidebar (visible to OWNER, ADMIN, AUDITOR)
-- Page shows a filter bar (date range, action dropdown, resource dropdown,
-  search by resource ID) and a paginated table of every audited event
-- Each row: timestamp, user (name + email), action badge (color-coded by
-  verb — green for create/post, red for void/delete, blue for update),
-  resource type, resource ID, IP address
-- Click "Show" on any row → expands a before/after JSON diff
-- "Export CSV" downloads the current filtered set
-- 50 entries per page, with pagination controls
+1. **Set up Chart of Accounts** (if not already): make sure you have a
+   `Fixed Assets` asset account (e.g. 1500), an `Accumulated Depreciation`
+   asset account that will hold a credit balance (e.g. 1510), and a
+   `Depreciation Expense` expense account (e.g. 6200).
+2. **Create asset categories** under Fixed Assets → Categories. For each:
+   pick the depreciation method, useful life, annual rate, and link the
+   three GL accounts.
+3. **Register assets** under Fixed Assets → Asset register → Add asset.
+   The category's defaults pre-fill but can be overridden per asset.
+4. **Run depreciation** monthly by clicking "Run depreciation" → pick the
+   period end date → submit. The engine:
+   - Calculates one month of depreciation per active asset
+   - Caps at salvage value (no over-depreciation)
+   - Posts ONE journal entry per run with lines grouped by category:
+     `DR Depreciation Expense / CR Accumulated Depreciation`
+   - Creates `DepreciationEntry` rows linked to that JE
+   - Marks assets as `FULLY_DEPRECIATED` when they hit salvage
+   - Idempotent: re-running for the same period skips already-booked assets
+   - "Catch-up" checkbox books cumulative dep for legacy assets that have
+     never been depreciated
+5. **Dispose** an asset by opening it from the register → click "Dispose
+   asset" → enter disposal date, proceeds, proceeds account (Bank/AR), and
+   gain/loss account. The engine books the full disposal JE:
+   `DR Cash + DR Accum Dep / CR Fixed Asset (+ DR Loss or CR Gain)`.
 
-## What's audited today (no changes needed)
+## How it shows up in reports
 
-- Journal entries — create, post, void
-- Payments — cheque issued, ACH issued, payment voided
-- Reconciliations — completed
-- Users — entity access grants, role changes, deactivations
-- Entities — created
-- **Period locks** — locked, released (new in this pass)
+No changes to the Reports module are needed — the engine just creates
+ordinary journal entries, so:
 
-## What's still not audited (gaps to close in a future pass)
+- **Balance Sheet**: Fixed Asset accounts show cost; Accumulated
+  Depreciation (an ASSET-type account with a credit balance) appears as a
+  negative number under Assets. Net of the two = Net Book Value, exactly
+  what an auditor expects.
+- **Profit & Loss**: Depreciation Expense appears in the Expenses section
+  for whatever period you're reporting on.
+- **Journal Report**: every depreciation run is a single `DEPR-YYYY-MM-NNNN`
+  reference; every disposal is `DISP-YYYY-NNNN`.
 
-- Account changes (create, edit, deactivate)
-- AP invoice operations (create, edit, mark paid)
-- 2FA events (these are user-level, not entity-level — the AuditLog model
-  requires entityId so user-scoped events don't fit cleanly; would need a
-  separate UserAuditLog table or a schema change to make entityId optional)
-- Reconciliation start (only completion is logged today)
+## Tests
 
-To close these, replace the direct `db.auditLog.create(...)` calls in
-existing routes with the new `logAudit(...)` helper — it auto-redacts and
-adds IP capture.
+17 unit tests pass against the depreciation math:
+```
+npm test
+```
 
-## Sanitization
+Coverage includes:
+- Straight-line + declining-balance correctness
+- Salvage floor (never depreciates below salvage)
+- Last-month rounding (total never exceeds cost − salvage)
+- Schedule projection and book-value monotonicity
+- Catch-up depreciation calculation
+- Date helpers (end-of-month, inclusive month diff)
 
-The helper automatically redacts any field whose name contains (case-
-insensitively): `password`, `secret`, `token`, `apiKey`, `totpSecret`,
-`jwt`, `sessionToken`, `achAccountNo`, `routingNo`, `codeHash`,
-`backupCode`. So you can safely pass full record objects as `before`/`after`
-without worrying about leaking credentials into the audit log.
+The DB-backed engine (runDepreciation, disposeAsset) is not unit-tested in
+this pass — integration tests against a test Postgres would be the right
+next step.
 
-Tested: 9 unit tests cover redaction, nested redaction, depth limit, length
-cap, Date/BigInt serialization, and case-insensitive matching. Run with
-`npm test`.
+## Honest caveats
+
+- **Pro-rate convention**: depreciation runs treat the acquisition month
+  as a full month. If you need mid-month or daily proration, that's a
+  small addition to `monthlyDepreciation`.
+- **One depreciation period per run**: the modal asks for one period-end
+  date. To depreciate Jan, Feb, Mar in one go you'd run it three times.
+  Could add a "depreciate from X through Y" multi-period mode if needed.
+- **Disposal requires you to pick a gain/loss account**: future
+  enhancement could read it from a global setting.
+- **Period locks apply**: if you've locked April 2026, you can't run
+  April depreciation until you release the lock.

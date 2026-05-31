@@ -122,6 +122,8 @@ export const MODULE_PERMISSIONS: Record<string, EntityRole> = {
   'payments:write':  'ACCOUNTANT',
   'recon:read':      'AUDITOR',
   'recon:write':     'ACCOUNTANT',
+  'assets:read':     'AUDITOR',
+  'assets:write':    'ACCOUNTANT',
   'payroll:read':    'PAYROLL_CLERK',
   'payroll:write':   'PAYROLL_CLERK',
   'budget:read':     'AUDITOR',

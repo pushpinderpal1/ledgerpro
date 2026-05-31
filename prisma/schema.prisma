@@ -39,6 +39,9 @@ model LegalEntity {
   reconciliations BankReconciliation[]
   lockedPeriods   LockedPeriod[]
   idempotencyKeys IdempotencyKey[]
+  assetCategories AssetCategory[]
+  fixedAssets     FixedAsset[]
+  depreciationEntries DepreciationEntry[]
 
   @@map("legal_entities")
 }
@@ -165,6 +168,10 @@ model Account {
   budgetLines  BudgetLine[]
   paymentsFrom Payment[]            @relation("PaymentBankAccount")
   reconciliations BankReconciliation[]
+  // Three roles an account can play in a fixed-asset category:
+  categoriesAssetAccount      AssetCategory[] @relation("CategoryAssetAccount")
+  categoriesAccumDepAccount   AssetCategory[] @relation("CategoryAccumDepAccount")
+  categoriesDepExpenseAccount AssetCategory[] @relation("CategoryDepExpenseAccount")
 
   @@unique([entityId, code])
   @@map("accounts")
@@ -594,6 +601,102 @@ model IdempotencyKey {
   @@unique([entityId, key])
   @@index([createdAt])                                 // for periodic purge
   @@map("idempotency_keys")
+}
+
+// ─── FIXED ASSET REGISTER ────────────────────────────────────────────────────
+// Three pieces:
+//   AssetCategory  → policy: depreciation method + GL accounts for postings
+//   FixedAsset     → individual assets purchased and tracked
+//   DepreciationEntry → one row per asset per period, links to the JE that
+//                       booked DR Dep Expense / CR Accumulated Depreciation
+
+enum DepreciationMethod {
+  STRAIGHT_LINE        // (cost - salvage) / useful life, equal monthly slices
+  DECLINING_BALANCE    // bookValue × monthlyRate, until salvage floor
+}
+
+enum AssetStatus {
+  ACTIVE               // currently depreciating
+  DISPOSED             // sold/scrapped — no further depreciation
+  FULLY_DEPRECIATED    // book value reached salvage — no further depreciation
+}
+
+model AssetCategory {
+  id                       String   @id @default(cuid())
+  entityId                 String
+  name                     String                                 // e.g. "Buildings", "Vehicles", "Computer Equipment"
+  description              String?
+  depreciationMethod       DepreciationMethod @default(STRAIGHT_LINE)
+  usefulLifeMonths         Int                                    // default for new assets in this category
+  depreciationRatePercent  Decimal  @db.Decimal(7, 4)              // annual % (e.g. 10.0000 for 10%)
+
+  // Three GL accounts that postings touch for this category:
+  assetAccountId           String                                 // ASSET: holds acquisition cost
+  accumDepAccountId        String                                 // ASSET (contra): credit balance reduces net BV
+  depExpenseAccountId      String                                 // EXPENSE: the period's depreciation
+
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  entity               LegalEntity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  assetAccount         Account     @relation("CategoryAssetAccount",     fields: [assetAccountId],     references: [id], onDelete: Restrict)
+  accumDepAccount      Account     @relation("CategoryAccumDepAccount",  fields: [accumDepAccountId],  references: [id], onDelete: Restrict)
+  depExpenseAccount    Account     @relation("CategoryDepExpenseAccount", fields: [depExpenseAccountId], references: [id], onDelete: Restrict)
+  assets               FixedAsset[]
+
+  @@unique([entityId, name])
+  @@map("asset_categories")
+}
+
+model FixedAsset {
+  id                      String   @id @default(cuid())
+  entityId                String
+  categoryId              String
+
+  assetNo                 String                                  // human-readable, unique within entity
+  description             String
+  acquisitionDate         DateTime
+  cost                    Decimal  @db.Decimal(18, 2)
+  salvageValue            Decimal  @default(0) @db.Decimal(18, 2) // floor below which depreciation stops
+  usefulLifeMonths        Int                                     // can override category default
+  depreciationMethod      DepreciationMethod
+  depreciationRatePercent Decimal  @db.Decimal(7, 4)
+
+  status                  AssetStatus @default(ACTIVE)
+  disposalDate            DateTime?
+  disposalProceeds        Decimal? @db.Decimal(18, 2)
+  location                String?
+  serialNumber            String?
+  notes                   String?
+
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  entity                  LegalEntity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  category                AssetCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  depreciationEntries     DepreciationEntry[]
+
+  @@unique([entityId, assetNo])
+  @@index([entityId, status])
+  @@map("fixed_assets")
+}
+
+model DepreciationEntry {
+  id              String   @id @default(cuid())
+  fixedAssetId    String
+  entityId        String
+  periodEnd       DateTime                                        // last day of the period this entry covers
+  amount          Decimal  @db.Decimal(18, 2)
+  bookValueAfter  Decimal  @db.Decimal(18, 2)                     // closing BV — useful for the asset schedule
+  journalEntryId  String?                                         // the shared JE for the run (per-category aggregation)
+  createdAt       DateTime @default(now())
+
+  fixedAsset      FixedAsset  @relation(fields: [fixedAssetId], references: [id], onDelete: Cascade)
+  entity          LegalEntity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+
+  @@unique([fixedAssetId, periodEnd])          // idempotency: one entry per asset per period
+  @@index([entityId, periodEnd])
+  @@map("depreciation_entries")
 }
 
 // ─── AUDIT LOG ───────────────────────────────────────────────────────────────

@@ -39,6 +39,7 @@ const MODULE_ACCESS: Record<string, string[]> = {
   payments:   ['OWNER','ADMIN','ACCOUNTANT','AP_CLERK'],
   recon:      ['OWNER','ADMIN','ACCOUNTANT','AUDITOR'],
   reports:    ['OWNER','ADMIN','ACCOUNTANT','AUDITOR','CLIENT_VIEW'],
+  assets:     ['OWNER','ADMIN','ACCOUNTANT','AUDITOR'],
   audit:      ['OWNER','ADMIN','AUDITOR'],
   periods:    ['OWNER','ADMIN'],
   payroll:    ['OWNER','ADMIN','PAYROLL_CLERK'],
@@ -89,6 +90,7 @@ export default function LedgerProApp() {
     { id: 'ap',        label: 'AP Tracker',         icon: '◎' },
     { id: 'payments',  label: 'Payments',           icon: '✓' },
     { id: 'recon',     label: 'Bank Recon',         icon: '↔' },
+    { id: 'assets',    label: 'Fixed Assets',       icon: '⬚' },
     { id: 'reports',   label: 'Reports',            icon: '▤' },
     { id: 'audit',     label: 'Audit Trail',        icon: '⊙' },
     { id: 'periods',   label: 'Period Locks',       icon: '🔒' },
@@ -205,6 +207,7 @@ export default function LedgerProApp() {
                 {page === 'ap'        && <ApPage         showToast={showToast} />}
                 {page === 'payments'  && <PaymentsPage   showToast={showToast} />}
                 {page === 'recon'     && <ReconPage      showToast={showToast} />}
+                {page === 'assets'    && <AssetsPage     showToast={showToast} />}
                 {page === 'reports'   && <ReportsPage    showToast={showToast} />}
                 {page === 'audit'     && <AuditPage      showToast={showToast} />}
                 {page === 'periods'   && <PeriodsPage    showToast={showToast} />}
@@ -3239,6 +3242,615 @@ function AuditPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => vo
 function prettyJson(raw: string): string {
   try { return JSON.stringify(JSON.parse(raw), null, 2) }
   catch { return raw }
+}
+
+// ─── Fixed Assets ─────────────────────────────────────────────────────────────
+type DepMethod = 'STRAIGHT_LINE' | 'DECLINING_BALANCE'
+
+interface AssetCategory {
+  id: string
+  name: string
+  description?: string | null
+  depreciationMethod: DepMethod
+  usefulLifeMonths: number
+  depreciationRatePercent: number
+  assetAccountId: string
+  accumDepAccountId: string
+  depExpenseAccountId: string
+  assetAccount?:      { code: string; name: string }
+  accumDepAccount?:   { code: string; name: string }
+  depExpenseAccount?: { code: string; name: string }
+  _count?: { assets: number }
+}
+
+interface FixedAsset {
+  id: string
+  categoryId: string
+  assetNo: string
+  description: string
+  acquisitionDate: string
+  cost: number
+  salvageValue: number
+  usefulLifeMonths: number
+  depreciationMethod: DepMethod
+  depreciationRatePercent: number
+  status: 'ACTIVE' | 'DISPOSED' | 'FULLY_DEPRECIATED'
+  disposalDate?: string | null
+  disposalProceeds?: number | null
+  location?: string | null
+  serialNumber?: string | null
+  category?: { id: string; name: string }
+  accumulated: number
+  bookValue: number
+}
+
+function AssetsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => void }) {
+  const { currentEntity, role } = useApp()
+  const [tab, setTab] = useState<'register'|'categories'>('register')
+  const canWrite = ['OWNER','ADMIN','ACCOUNTANT'].includes(role)
+  const [showDepModal, setShowDepModal] = useState(false)
+
+  return (
+    <div>
+      <div style={S.pageActions}>
+        <div style={{ display: 'flex', gap: 4 }}>
+          <button onClick={() => setTab('register')} style={{ ...S.btn, ...(tab==='register' ? { background:'#0f172a', color:'#fff', borderColor:'#0f172a' } : {}) }}>Asset register</button>
+          <button onClick={() => setTab('categories')} style={{ ...S.btn, ...(tab==='categories' ? { background:'#0f172a', color:'#fff', borderColor:'#0f172a' } : {}) }}>Categories</button>
+        </div>
+        {canWrite && tab === 'register' && (
+          <button style={{ ...S.btn, ...S.btnPrimary }} onClick={() => setShowDepModal(true)}>Run depreciation</button>
+        )}
+      </div>
+
+      {tab === 'register'   && <AssetRegister showToast={showToast} canWrite={canWrite} />}
+      {tab === 'categories' && <AssetCategories showToast={showToast} canWrite={canWrite} />}
+
+      {showDepModal && <DepreciationRunModal onClose={() => setShowDepModal(false)} showToast={showToast} />}
+    </div>
+  )
+}
+
+// ─── Categories tab ────────────────────────────────────────────────────────────
+function AssetCategories({ showToast, canWrite }: { showToast: (m: string, t?: 'ok'|'err') => void; canWrite: boolean }) {
+  const { currentEntity } = useApp()
+  const [categories, setCategories] = useState<AssetCategory[]>([])
+  const [accounts, setAccounts] = useState<Account[]>([])
+  const [showForm, setShowForm] = useState(false)
+  const [form, setForm] = useState({
+    name: '', description: '', depreciationMethod: 'STRAIGHT_LINE' as DepMethod,
+    usefulLifeMonths: '60', depreciationRatePercent: '20',
+    assetAccountId: '', accumDepAccountId: '', depExpenseAccountId: '',
+  })
+
+  const load = useCallback(() => {
+    if (!currentEntity) return
+    fetch(`/api/asset-categories?entityId=${currentEntity.id}`).then(r => r.json()).then(d => setCategories(d.categories ?? []))
+    fetch(`/api/accounts?entityId=${currentEntity.id}`).then(r => r.json()).then(setAccounts)
+  }, [currentEntity])
+
+  useEffect(() => { load() }, [load])
+
+  // Bucket accounts so the dropdowns are pre-filtered to plausible choices.
+  const assetAccounts   = accounts.filter(a => a.type === 'ASSET')
+  const expenseAccounts = accounts.filter(a => a.type === 'EXPENSE')
+
+  const save = async () => {
+    if (!currentEntity) return
+    const errs: string[] = []
+    if (!form.name) errs.push('Name')
+    if (!form.assetAccountId) errs.push('Asset account')
+    if (!form.accumDepAccountId) errs.push('Accumulated depreciation account')
+    if (!form.depExpenseAccountId) errs.push('Depreciation expense account')
+    if (errs.length) return showToast(`Required: ${errs.join(', ')}`, 'err')
+
+    const res = await fetch('/api/asset-categories', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        entityId: currentEntity.id,
+        name: form.name,
+        description: form.description || undefined,
+        depreciationMethod: form.depreciationMethod,
+        usefulLifeMonths: parseInt(form.usefulLifeMonths, 10) || 60,
+        depreciationRatePercent: parseFloat(form.depreciationRatePercent) || 0,
+        assetAccountId: form.assetAccountId,
+        accumDepAccountId: form.accumDepAccountId,
+        depExpenseAccountId: form.depExpenseAccountId,
+      }),
+    })
+    if (res.ok) {
+      showToast('Category created')
+      setShowForm(false)
+      setForm({ name: '', description: '', depreciationMethod: 'STRAIGHT_LINE', usefulLifeMonths: '60', depreciationRatePercent: '20', assetAccountId: '', accumDepAccountId: '', depExpenseAccountId: '' })
+      load()
+    } else {
+      const d = await res.json(); showToast(d.error ?? 'Error', 'err')
+    }
+  }
+
+  const del = async (id: string, name: string) => {
+    if (!currentEntity) return
+    if (!confirm(`Delete category "${name}"?`)) return
+    const res = await fetch(`/api/asset-categories?entityId=${currentEntity.id}&id=${id}`, { method: 'DELETE' })
+    if (res.ok) { showToast('Deleted'); load() }
+    else { const d = await res.json(); showToast(d.error ?? 'Error', 'err') }
+  }
+
+  return (
+    <div>
+      {canWrite && (
+        <div style={{ marginBottom: 16 }}>
+          <button style={{ ...S.btn, ...S.btnPrimary }} onClick={() => setShowForm(o => !o)}>+ New category</button>
+        </div>
+      )}
+
+      {showForm && (
+        <div style={{ ...S.card, marginBottom: 16 }}>
+          <div style={S.cardHeader}>New asset category</div>
+          <div style={S.formGrid}>
+            <div><label style={S.label}>Name</label><input style={S.input} value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Computer Equipment" /></div>
+            <div><label style={S.label}>Description</label><input style={S.input} value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} /></div>
+            <div>
+              <label style={S.label}>Depreciation method</label>
+              <select style={S.select} value={form.depreciationMethod} onChange={e => setForm(f => ({ ...f, depreciationMethod: e.target.value as DepMethod }))}>
+                <option value="STRAIGHT_LINE">Straight Line</option>
+                <option value="DECLINING_BALANCE">Declining Balance</option>
+              </select>
+            </div>
+            <div><label style={S.label}>Useful life (months)</label><input style={S.input} value={form.usefulLifeMonths} onChange={e => setForm(f => ({ ...f, usefulLifeMonths: e.target.value }))} placeholder="60" /></div>
+            <div><label style={S.label}>Annual depreciation rate (%)</label><input style={S.input} value={form.depreciationRatePercent} onChange={e => setForm(f => ({ ...f, depreciationRatePercent: e.target.value }))} placeholder="20" /></div>
+          </div>
+          <div style={{ fontSize: 11, color: '#94a3b8', margin: '12px 0 4px', textTransform: 'uppercase', letterSpacing: 0.06 }}>GL accounts for postings</div>
+          <div style={S.formGrid}>
+            <div>
+              <label style={S.label}>Fixed asset (cost)</label>
+              <select style={S.select} value={form.assetAccountId} onChange={e => setForm(f => ({ ...f, assetAccountId: e.target.value }))}>
+                <option value="">Select ASSET account…</option>
+                {assetAccounts.map(a => <option key={a.id} value={a.id}>{a.code} — {a.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={S.label}>Accumulated depreciation (contra-asset)</label>
+              <select style={S.select} value={form.accumDepAccountId} onChange={e => setForm(f => ({ ...f, accumDepAccountId: e.target.value }))}>
+                <option value="">Select ASSET account…</option>
+                {assetAccounts.map(a => <option key={a.id} value={a.id}>{a.code} — {a.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={S.label}>Depreciation expense</label>
+              <select style={S.select} value={form.depExpenseAccountId} onChange={e => setForm(f => ({ ...f, depExpenseAccountId: e.target.value }))}>
+                <option value="">Select EXPENSE account…</option>
+                {expenseAccounts.map(a => <option key={a.id} value={a.id}>{a.code} — {a.name}</option>)}
+              </select>
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+            <button style={{ ...S.btn, ...S.btnPrimary }} onClick={save}>Save</button>
+            <button style={S.btn} onClick={() => setShowForm(false)}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      <div style={S.card}>
+        <table style={S.table}>
+          <thead><tr>{['Category','Method','Life','Rate','Asset acct','Accum dep acct','Expense acct','# assets',''].map(h => <th key={h} style={S.th}>{h}</th>)}</tr></thead>
+          <tbody>
+            {categories.length === 0 && <tr><td colSpan={9} style={{ ...S.td, textAlign: 'center', color: '#94a3b8' }}>No categories yet — create one to start tracking assets</td></tr>}
+            {categories.map(c => (
+              <tr key={c.id}>
+                <td style={{ ...S.td, fontWeight: 500 }}>{c.name}</td>
+                <td style={{ ...S.td, fontSize: 12 }}>{c.depreciationMethod === 'STRAIGHT_LINE' ? 'Straight line' : 'Declining bal.'}</td>
+                <td style={{ ...S.td, textAlign: 'right' }}>{c.usefulLifeMonths} mo</td>
+                <td style={{ ...S.td, textAlign: 'right' }}>{Number(c.depreciationRatePercent).toFixed(2)}%</td>
+                <td style={{ ...S.td, fontSize: 11, fontFamily: 'monospace', color: '#64748b' }}>{c.assetAccount ? `${c.assetAccount.code} ${c.assetAccount.name}` : '—'}</td>
+                <td style={{ ...S.td, fontSize: 11, fontFamily: 'monospace', color: '#64748b' }}>{c.accumDepAccount ? `${c.accumDepAccount.code} ${c.accumDepAccount.name}` : '—'}</td>
+                <td style={{ ...S.td, fontSize: 11, fontFamily: 'monospace', color: '#64748b' }}>{c.depExpenseAccount ? `${c.depExpenseAccount.code} ${c.depExpenseAccount.name}` : '—'}</td>
+                <td style={{ ...S.td, textAlign: 'right' }}>{c._count?.assets ?? 0}</td>
+                <td style={{ ...S.td, textAlign: 'right' }}>
+                  {canWrite && (c._count?.assets ?? 0) === 0 && <button style={{ ...S.textBtn, color: '#dc2626' }} onClick={() => del(c.id, c.name)}>Delete</button>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+// ─── Register tab ──────────────────────────────────────────────────────────────
+function AssetRegister({ showToast, canWrite }: { showToast: (m: string, t?: 'ok'|'err') => void; canWrite: boolean }) {
+  const { currentEntity } = useApp()
+  const [assets, setAssets] = useState<FixedAsset[]>([])
+  const [categories, setCategories] = useState<AssetCategory[]>([])
+  const [statusFilter, setStatusFilter] = useState<'all'|'ACTIVE'|'DISPOSED'|'FULLY_DEPRECIATED'>('all')
+  const [showForm, setShowForm] = useState(false)
+  const [selected, setSelected] = useState<FixedAsset | null>(null)
+  const today = new Date().toISOString().slice(0, 10)
+  const [form, setForm] = useState({
+    categoryId: '', assetNo: '', description: '', acquisitionDate: today,
+    cost: '', salvageValue: '0', usefulLifeMonths: '', depreciationRatePercent: '',
+    depreciationMethod: 'STRAIGHT_LINE' as DepMethod, location: '', serialNumber: '',
+  })
+
+  const load = useCallback(() => {
+    if (!currentEntity) return
+    fetch(`/api/fixed-assets?entityId=${currentEntity.id}`).then(r => r.json()).then(d => setAssets(d.assets ?? []))
+    fetch(`/api/asset-categories?entityId=${currentEntity.id}`).then(r => r.json()).then(d => setCategories(d.categories ?? []))
+  }, [currentEntity])
+
+  useEffect(() => { load() }, [load])
+
+  // When a category is picked, auto-fill life and rate.
+  useEffect(() => {
+    if (!form.categoryId) return
+    const c = categories.find(c => c.id === form.categoryId)
+    if (!c) return
+    setForm(f => ({
+      ...f,
+      depreciationMethod: c.depreciationMethod,
+      usefulLifeMonths: f.usefulLifeMonths || String(c.usefulLifeMonths),
+      depreciationRatePercent: f.depreciationRatePercent || String(Number(c.depreciationRatePercent)),
+    }))
+  }, [form.categoryId, categories])
+
+  const filtered = assets.filter(a => statusFilter === 'all' || a.status === statusFilter)
+  const totals = filtered.reduce((s, a) => ({
+    cost: s.cost + Number(a.cost),
+    accum: s.accum + Number(a.accumulated),
+    book: s.book + Number(a.bookValue),
+  }), { cost: 0, accum: 0, book: 0 })
+
+  const save = async () => {
+    if (!currentEntity) return
+    if (!form.categoryId) return showToast('Category required', 'err')
+    if (!form.assetNo) return showToast('Asset # required', 'err')
+    if (!form.description) return showToast('Description required', 'err')
+    if (!parseFloat(form.cost)) return showToast('Cost required', 'err')
+    const res = await fetch('/api/fixed-assets', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        entityId: currentEntity.id,
+        categoryId: form.categoryId,
+        assetNo: form.assetNo,
+        description: form.description,
+        acquisitionDate: form.acquisitionDate,
+        cost: parseFloat(form.cost),
+        salvageValue: parseFloat(form.salvageValue) || 0,
+        usefulLifeMonths: parseInt(form.usefulLifeMonths, 10) || undefined,
+        depreciationRatePercent: parseFloat(form.depreciationRatePercent) || undefined,
+        depreciationMethod: form.depreciationMethod,
+        location: form.location || undefined,
+        serialNumber: form.serialNumber || undefined,
+      }),
+    })
+    if (res.ok) {
+      showToast('Asset added')
+      setShowForm(false)
+      setForm({ categoryId: '', assetNo: '', description: '', acquisitionDate: today, cost: '', salvageValue: '0', usefulLifeMonths: '', depreciationRatePercent: '', depreciationMethod: 'STRAIGHT_LINE', location: '', serialNumber: '' })
+      load()
+    } else {
+      const d = await res.json(); showToast(d.error ?? 'Error', 'err')
+    }
+  }
+
+  if (selected) {
+    return <AssetDetail asset={selected} onClose={() => { setSelected(null); load() }} showToast={showToast} canWrite={canWrite} />
+  }
+
+  return (
+    <div>
+      {/* KPI strip */}
+      <div style={S.kpiGrid}>
+        {[
+          { label: 'Total cost', value: `$${fmt(totals.cost)}`, color: '#475569' },
+          { label: 'Accumulated depreciation', value: `$${fmt(totals.accum)}`, color: '#d97706' },
+          { label: 'Net book value', value: `$${fmt(totals.book)}`, color: '#0891b2' },
+          { label: '# of assets', value: String(filtered.length), color: '#0f172a' },
+        ].map(k => <div key={k.label} style={S.kpiCard}><div style={{fontSize:11,color:'#94a3b8',marginBottom:4}}>{k.label}</div><div style={{fontSize:22,fontWeight:700,color:k.color}}>{k.value}</div></div>)}
+      </div>
+
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+        <div style={{ display: 'flex', gap: 4 }}>
+          {(['all','ACTIVE','FULLY_DEPRECIATED','DISPOSED'] as const).map(s => (
+            <button key={s} onClick={() => setStatusFilter(s)} style={{ ...S.btn, fontSize: 12, padding: '6px 10px', ...(statusFilter === s ? { background:'#0f172a', color:'#fff', borderColor:'#0f172a' } : {}) }}>
+              {s === 'all' ? 'All' : s === 'ACTIVE' ? 'Active' : s === 'FULLY_DEPRECIATED' ? 'Fully depreciated' : 'Disposed'}
+            </button>
+          ))}
+        </div>
+        {canWrite && categories.length > 0 && <button style={{ ...S.btn, ...S.btnPrimary }} onClick={() => setShowForm(o => !o)}>+ Add asset</button>}
+      </div>
+
+      {categories.length === 0 && canWrite && (
+        <div style={{ padding: 16, background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 8, marginBottom: 16, fontSize: 13, color: '#92400e' }}>
+          Create an asset category first — categories define depreciation method and which GL accounts get posted.
+        </div>
+      )}
+
+      {showForm && (
+        <div style={{ ...S.card, marginBottom: 16 }}>
+          <div style={S.cardHeader}>New fixed asset</div>
+          <div style={S.formGrid}>
+            <div>
+              <label style={S.label}>Category</label>
+              <select style={S.select} value={form.categoryId} onChange={e => setForm(f => ({ ...f, categoryId: e.target.value }))}>
+                <option value="">Select…</option>
+                {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </div>
+            <div><label style={S.label}>Asset #</label><input style={S.input} value={form.assetNo} onChange={e => setForm(f => ({ ...f, assetNo: e.target.value }))} placeholder="FA-001" /></div>
+            <div style={{ gridColumn: '1 / -1' }}><label style={S.label}>Description</label><input style={S.input} value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} placeholder="MacBook Pro 16-inch" /></div>
+            <div><label style={S.label}>Acquisition date</label><input style={S.input} type="date" value={form.acquisitionDate} onChange={e => setForm(f => ({ ...f, acquisitionDate: e.target.value }))} /></div>
+            <div><label style={S.label}>Cost</label><input style={S.input} value={form.cost} onChange={e => setForm(f => ({ ...f, cost: e.target.value }))} placeholder="3000.00" /></div>
+            <div><label style={S.label}>Salvage value</label><input style={S.input} value={form.salvageValue} onChange={e => setForm(f => ({ ...f, salvageValue: e.target.value }))} placeholder="0" /></div>
+            <div>
+              <label style={S.label}>Method</label>
+              <select style={S.select} value={form.depreciationMethod} onChange={e => setForm(f => ({ ...f, depreciationMethod: e.target.value as DepMethod }))}>
+                <option value="STRAIGHT_LINE">Straight Line</option>
+                <option value="DECLINING_BALANCE">Declining Balance</option>
+              </select>
+            </div>
+            <div><label style={S.label}>Useful life (months)</label><input style={S.input} value={form.usefulLifeMonths} onChange={e => setForm(f => ({ ...f, usefulLifeMonths: e.target.value }))} placeholder="60" /></div>
+            <div><label style={S.label}>Annual rate (%)</label><input style={S.input} value={form.depreciationRatePercent} onChange={e => setForm(f => ({ ...f, depreciationRatePercent: e.target.value }))} placeholder="20" /></div>
+            <div><label style={S.label}>Location</label><input style={S.input} value={form.location} onChange={e => setForm(f => ({ ...f, location: e.target.value }))} placeholder="Optional" /></div>
+            <div><label style={S.label}>Serial number</label><input style={S.input} value={form.serialNumber} onChange={e => setForm(f => ({ ...f, serialNumber: e.target.value }))} placeholder="Optional" /></div>
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+            <button style={{ ...S.btn, ...S.btnPrimary }} onClick={save}>Save</button>
+            <button style={S.btn} onClick={() => setShowForm(false)}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      <div style={S.card}>
+        <table style={S.table}>
+          <thead><tr>{['Asset #','Description','Category','Acq date','Cost','Accum dep','Book value','Status'].map(h => <th key={h} style={S.th}>{h}</th>)}</tr></thead>
+          <tbody>
+            {filtered.length === 0 && <tr><td colSpan={8} style={{ ...S.td, textAlign: 'center', color: '#94a3b8' }}>No assets {statusFilter !== 'all' ? `with status ${statusFilter}` : 'yet'}</td></tr>}
+            {filtered.map(a => (
+              <tr key={a.id} style={{ cursor: 'pointer' }} onClick={() => setSelected(a)}>
+                <td style={{ ...S.td, fontFamily: 'monospace', fontSize: 11, fontWeight: 500 }}>{a.assetNo}</td>
+                <td style={S.td}>{a.description}</td>
+                <td style={{ ...S.td, fontSize: 12, color: '#64748b' }}>{a.category?.name ?? ''}</td>
+                <td style={S.td}>{fmtDate(a.acquisitionDate)}</td>
+                <td style={{ ...S.td, textAlign: 'right' }}>${fmt(Number(a.cost))}</td>
+                <td style={{ ...S.td, textAlign: 'right', color: '#d97706' }}>${fmt(Number(a.accumulated))}</td>
+                <td style={{ ...S.td, textAlign: 'right', fontWeight: 600 }}>${fmt(Number(a.bookValue))}</td>
+                <td style={S.td}><AssetStatusBadge status={a.status} /></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+function AssetStatusBadge({ status }: { status: FixedAsset['status'] }) {
+  const map = {
+    ACTIVE:             { bg: '#f0fdf4', fg: '#166534', label: 'Active' },
+    DISPOSED:           { bg: '#fef2f2', fg: '#991b1b', label: 'Disposed' },
+    FULLY_DEPRECIATED:  { bg: '#f1f5f9', fg: '#475569', label: 'Fully depreciated' },
+  }
+  const t = map[status]
+  return <span style={{ background: t.bg, color: t.fg, padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600 }}>{t.label}</span>
+}
+
+// ─── Asset detail (with depreciation schedule + dispose) ──────────────────────
+interface DepEntry { id: string; periodEnd: string; amount: number; bookValueAfter: number; journalEntryId: string | null }
+
+function AssetDetail({ asset: summary, onClose, showToast, canWrite }: {
+  asset: FixedAsset; onClose: () => void; showToast: (m: string, t?: 'ok'|'err') => void; canWrite: boolean
+}) {
+  const { currentEntity } = useApp()
+  const [detail, setDetail] = useState<{ asset: FixedAsset & { depreciationEntries: DepEntry[]; category: AssetCategory }; accumulated: number; bookValue: number } | null>(null)
+  const [accounts, setAccounts] = useState<Account[]>([])
+  const [showDispose, setShowDispose] = useState(false)
+  const today = new Date().toISOString().slice(0, 10)
+  const [dispForm, setDispForm] = useState({ disposalDate: today, proceeds: '', proceedsAccountId: '', gainLossAccountId: '' })
+
+  useEffect(() => {
+    if (!currentEntity) return
+    fetch(`/api/fixed-assets?entityId=${currentEntity.id}&id=${summary.id}`).then(r => r.json()).then(setDetail)
+    fetch(`/api/accounts?entityId=${currentEntity.id}`).then(r => r.json()).then(setAccounts)
+  }, [currentEntity, summary.id])
+
+  const submitDispose = async () => {
+    if (!currentEntity) return
+    if (!dispForm.gainLossAccountId) return showToast('Pick a gain/loss account', 'err')
+    const res = await fetch('/api/fixed-assets', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'dispose', entityId: currentEntity.id, assetId: summary.id,
+        disposalDate: dispForm.disposalDate,
+        proceeds: parseFloat(dispForm.proceeds) || 0,
+        proceedsAccountId: dispForm.proceedsAccountId || dispForm.gainLossAccountId,
+        gainLossAccountId: dispForm.gainLossAccountId,
+      }),
+    })
+    if (res.ok) { showToast('Asset disposed'); onClose() }
+    else { const d = await res.json(); showToast(d.error ?? 'Error', 'err') }
+  }
+
+  const a = detail?.asset
+  return (
+    <div>
+      <div style={S.pageActions}>
+        <button style={S.btn} onClick={onClose}>← Back to register</button>
+        {canWrite && a && a.status === 'ACTIVE' && (
+          <button style={{ ...S.btn, color: '#dc2626', borderColor: '#fecaca' }} onClick={() => setShowDispose(true)}>Dispose asset</button>
+        )}
+      </div>
+
+      {!a && <div style={{ textAlign: 'center', padding: 60, color: '#94a3b8' }}>Loading…</div>}
+      {a && (
+        <>
+          <div style={S.card}>
+            <div style={S.cardHeader}>
+              {a.assetNo} — {a.description}
+              <span style={{ marginLeft: 12 }}><AssetStatusBadge status={a.status} /></span>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 16, padding: '4px 4px 14px' }}>
+              {[
+                ['Category', a.category?.name ?? '—'],
+                ['Acquisition date', fmtDate(a.acquisitionDate)],
+                ['Cost', `$${fmt(Number(a.cost))}`],
+                ['Salvage value', `$${fmt(Number(a.salvageValue))}`],
+                ['Useful life', `${a.usefulLifeMonths} months`],
+                ['Method', a.depreciationMethod === 'STRAIGHT_LINE' ? 'Straight Line' : 'Declining Balance'],
+                ['Rate', `${Number(a.depreciationRatePercent).toFixed(2)}%`],
+                ['Accum. depreciation', `$${fmt(detail!.accumulated)}`],
+                ['Net book value', `$${fmt(detail!.bookValue)}`],
+                ...(a.location ? [['Location', a.location]] : []),
+                ...(a.serialNumber ? [['Serial number', a.serialNumber]] : []),
+                ...(a.status === 'DISPOSED' ? [
+                  ['Disposal date', fmtDate(a.disposalDate ?? '')],
+                  ['Disposal proceeds', `$${fmt(Number(a.disposalProceeds ?? 0))}`],
+                ] : []),
+              ].map(([label, value]) => (
+                <div key={label as string}>
+                  <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.06, marginBottom: 2 }}>{label}</div>
+                  <div style={{ fontSize: 14, fontWeight: 500 }}>{value as string}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div style={{ ...S.card, marginTop: 16 }}>
+            <div style={S.cardHeader}>Depreciation schedule ({a.depreciationEntries.length} entries)</div>
+            <table style={S.table}>
+              <thead><tr>{['Period','Depreciation','Accumulated','Book value','JE'].map(h => <th key={h} style={S.th}>{h}</th>)}</tr></thead>
+              <tbody>
+                {a.depreciationEntries.length === 0 && <tr><td colSpan={5} style={{ ...S.td, textAlign: 'center', color: '#94a3b8' }}>No depreciation yet — run depreciation from the register</td></tr>}
+                {a.depreciationEntries.map((e, i) => {
+                  const accumThroughHere = a.depreciationEntries.slice(0, i + 1).reduce((s, x) => s + Number(x.amount), 0)
+                  return (
+                    <tr key={e.id}>
+                      <td style={S.td}>{fmtDate(e.periodEnd)}</td>
+                      <td style={{ ...S.td, textAlign: 'right' }}>${fmt(Number(e.amount))}</td>
+                      <td style={{ ...S.td, textAlign: 'right', color: '#d97706' }}>${fmt(accumThroughHere)}</td>
+                      <td style={{ ...S.td, textAlign: 'right', fontWeight: 500 }}>${fmt(Number(e.bookValueAfter))}</td>
+                      <td style={{ ...S.td, fontFamily: 'monospace', fontSize: 11, color: '#64748b' }}>{e.journalEntryId ?? '—'}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
+      {showDispose && a && (
+        <ModalOverlay onClose={() => setShowDispose(false)}>
+          <div style={S.cardHeader}>Dispose {a.assetNo}</div>
+          <div style={{ fontSize: 13, color: '#475569', marginBottom: 14, lineHeight: 1.5 }}>
+            Books the disposal JE: removes cost, removes accumulated depreciation, records any proceeds, and books the gain/loss as the balancing figure.
+          </div>
+          <div style={S.formGrid}>
+            <div><label style={S.label}>Disposal date</label><input style={S.input} type="date" value={dispForm.disposalDate} onChange={e => setDispForm(f => ({ ...f, disposalDate: e.target.value }))} /></div>
+            <div><label style={S.label}>Proceeds</label><input style={S.input} value={dispForm.proceeds} onChange={e => setDispForm(f => ({ ...f, proceeds: e.target.value }))} placeholder="0.00" /></div>
+            <div>
+              <label style={S.label}>Proceeds account</label>
+              <select style={S.select} value={dispForm.proceedsAccountId} onChange={e => setDispForm(f => ({ ...f, proceedsAccountId: e.target.value }))}>
+                <option value="">— (no proceeds)</option>
+                {accounts.filter(x => x.type === 'ASSET').map(x => <option key={x.id} value={x.id}>{x.code} — {x.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={S.label}>Gain / loss account</label>
+              <select style={S.select} value={dispForm.gainLossAccountId} onChange={e => setDispForm(f => ({ ...f, gainLossAccountId: e.target.value }))}>
+                <option value="">Select…</option>
+                {accounts.filter(x => x.type === 'REVENUE' || x.type === 'EXPENSE').map(x => <option key={x.id} value={x.id}>{x.code} — {x.name} ({x.type})</option>)}
+              </select>
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+            <button style={{ ...S.btn, ...S.btnPrimary }} onClick={submitDispose}>Post disposal</button>
+            <button style={S.btn} onClick={() => setShowDispose(false)}>Cancel</button>
+          </div>
+        </ModalOverlay>
+      )}
+    </div>
+  )
+}
+
+// ─── Depreciation run modal ────────────────────────────────────────────────────
+function DepreciationRunModal({ onClose, showToast }: { onClose: () => void; showToast: (m: string, t?: 'ok'|'err') => void }) {
+  const { currentEntity } = useApp()
+  const [periodEnd, setPeriodEnd] = useState(() => {
+    // Default to last day of last completed month.
+    const d = new Date()
+    d.setDate(0)
+    return d.toISOString().slice(0, 10)
+  })
+  const [catchUp, setCatchUp] = useState(false)
+  const [running, setRunning] = useState(false)
+  const [result, setResult] = useState<{ assetsProcessed: number; totalDepreciation: number; ref: string | null } | null>(null)
+
+  const run = async () => {
+    if (!currentEntity) return
+    setRunning(true)
+    try {
+      const res = await fetch('/api/fixed-assets', {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'depreciate', entityId: currentEntity.id, periodEnd, catchUp }),
+      })
+      const data = await res.json()
+      if (!res.ok) return showToast(data.error ?? 'Run failed', 'err')
+      setResult(data)
+      if (data.assetsProcessed === 0) showToast('Nothing to depreciate — either no eligible assets or already booked', 'ok')
+      else showToast(`Posted ${data.ref} — depreciated ${data.assetsProcessed} asset${data.assetsProcessed === 1 ? '' : 's'} for $${fmt(data.totalDepreciation)}`)
+    } finally { setRunning(false) }
+  }
+
+  return (
+    <ModalOverlay onClose={onClose}>
+      <div style={S.cardHeader}>Run depreciation</div>
+      {!result && <>
+        <div style={{ fontSize: 13, color: '#475569', marginBottom: 14, lineHeight: 1.6 }}>
+          Calculates one month of depreciation for every <strong>ACTIVE</strong> asset acquired on or before the period-end date, and posts the JE:<br/>
+          <span style={{ fontFamily: 'monospace', fontSize: 12 }}>DR Depreciation Expense  /  CR Accumulated Depreciation</span><br/>
+          Idempotent — running twice for the same period skips already-booked assets.
+        </div>
+        <div style={S.formGrid}>
+          <div><label style={S.label}>Period end</label><input style={S.input} type="date" value={periodEnd} onChange={e => setPeriodEnd(e.target.value)} /></div>
+          <div style={{ display: 'flex', alignItems: 'flex-end' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#475569' }}>
+              <input type="checkbox" checked={catchUp} onChange={e => setCatchUp(e.target.checked)} />
+              Catch-up — book full cumulative dep for assets that have never been depreciated
+            </label>
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
+          <button style={{ ...S.btn, ...S.btnPrimary }} onClick={run} disabled={running}>{running ? 'Running…' : 'Run depreciation'}</button>
+          <button style={S.btn} onClick={onClose}>Cancel</button>
+        </div>
+      </>}
+      {result && <>
+        <div style={{ padding: 16, background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, marginBottom: 14 }}>
+          <div style={{ fontWeight: 600, color: '#166534', marginBottom: 4 }}>✓ Depreciation posted</div>
+          <div style={{ fontSize: 13, color: '#166534' }}>
+            {result.assetsProcessed} asset{result.assetsProcessed === 1 ? '' : 's'} • Total: ${fmt(result.totalDepreciation)}<br/>
+            {result.ref && <>Journal entry: <strong>{result.ref}</strong></>}
+          </div>
+        </div>
+        <button style={{ ...S.btn, ...S.btnPrimary }} onClick={onClose}>Done</button>
+      </>}
+    </ModalOverlay>
+  )
+}
+
+// Reusable modal overlay
+function ModalOverlay({ onClose, children }: { onClose: () => void; children: React.ReactNode }) {
+  return (
+    <div
+      style={{ position: 'fixed', inset: 0, background: 'rgba(15, 23, 42, 0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: 20 }}
+      onClick={onClose}
+    >
+      <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, padding: 24, maxWidth: 540, width: '100%', boxShadow: '0 20px 60px rgba(0,0,0,0.3)', maxHeight: '90vh', overflow: 'auto' }}>
+        {children}
+      </div>
+    </div>
+  )
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
