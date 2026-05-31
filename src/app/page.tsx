@@ -474,6 +474,7 @@ function AccountsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') =>
   const [accounts, setAccounts] = useState<Account[]>([])
   const [filter, setFilter] = useState('ALL')
   const [showForm, setShowForm] = useState(false)
+  const [showImport, setShowImport] = useState(false)
   const [form, setForm] = useState({ code: '', name: '', type: 'EXPENSE', subType: '', description: '' })
 
   const load = useCallback(() => {
@@ -504,7 +505,12 @@ function AccountsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') =>
             <button key={t} style={{ ...S.filterBtn, ...(filter === t ? S.filterBtnActive : {}) }} onClick={() => setFilter(t)}>{t}</button>
           ))}
         </div>
-        {canWrite && <button style={{ ...S.btn, ...S.btnPrimary }} onClick={() => setShowForm(o => !o)}>+ Add account</button>}
+        {canWrite && (
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button style={S.btn} onClick={() => setShowImport(true)}>↥ Import COA</button>
+            <button style={{ ...S.btn, ...S.btnPrimary }} onClick={() => setShowForm(o => !o)}>+ Add account</button>
+          </div>
+        )}
       </div>
 
       {showForm && (
@@ -542,7 +548,243 @@ function AccountsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') =>
           ))}</tbody>
         </table>
       </div>
+
+      {showImport && (
+        <ImportCoaModal
+          onClose={() => setShowImport(false)}
+          onImported={() => { setShowImport(false); load() }}
+          showToast={showToast}
+        />
+      )}
     </div>
+  )
+}
+
+// ─── COA Import Modal ─────────────────────────────────────────────────────────
+interface PreviewRow {
+  row: {
+    code: string; name: string; type: string; subType?: string
+    description?: string; parentCode?: string; parentName?: string
+    isBankAccount?: boolean; warnings: string[]
+  }
+  action: 'create' | 'update' | 'conflict' | 'skip'
+  reason?: string
+}
+interface Preview {
+  format: 'csv' | 'iif'
+  rows: PreviewRow[]
+  parseErrors: { line?: number; message: string }[]
+  summary: { total: number; create: number; update: number; conflict: number; skip: number }
+}
+
+function ImportCoaModal({ onClose, onImported, showToast }: {
+  onClose: () => void; onImported: () => void; showToast: (m: string, t?: 'ok'|'err') => void
+}) {
+  const { currentEntity } = useApp()
+  const [content, setContent] = useState('')
+  const [filename, setFilename] = useState('')
+  const [preview, setPreview] = useState<Preview | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [overwriteOnConflict, setOverwriteOnConflict] = useState(false)
+  const [commitResult, setCommitResult] = useState<{ created: number; updated: number; skipped: number; parentLinks: number; errors: { code: string; message: string }[] } | null>(null)
+
+  const handleFile = (file: File) => {
+    setFilename(file.name)
+    const reader = new FileReader()
+    reader.onload = (e) => setContent((e.target?.result as string) ?? '')
+    reader.readAsText(file)
+  }
+
+  const onDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    const f = e.dataTransfer.files?.[0]
+    if (f) handleFile(f)
+  }
+
+  const runPreview = async () => {
+    if (!currentEntity || !content) return showToast('Paste or upload a file first', 'err')
+    setBusy(true)
+    try {
+      const res = await fetch('/api/accounts/import', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'preview', entityId: currentEntity.id, filename: filename || 'import.csv', content }),
+      })
+      const data = await res.json()
+      if (!res.ok) return showToast(data.error ?? 'Preview failed', 'err')
+      setPreview(data)
+    } finally { setBusy(false) }
+  }
+
+  const runCommit = async () => {
+    if (!currentEntity || !preview) return
+    setBusy(true)
+    try {
+      const res = await fetch('/api/accounts/import', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'commit', entityId: currentEntity.id, filename, content, overwriteOnConflict }),
+      })
+      const data = await res.json()
+      if (!res.ok) return showToast(data.error ?? 'Import failed', 'err')
+      setCommitResult(data)
+      showToast(`Imported ${data.created} new, ${data.updated} updated`)
+    } finally { setBusy(false) }
+  }
+
+  const downloadTemplate = () => {
+    window.open('/api/accounts/import?template=csv', '_blank')
+  }
+
+  return (
+    <ModalOverlay onClose={onClose}>
+      <div style={S.cardHeader}>Import Chart of Accounts</div>
+
+      {/* Stage 1: file input */}
+      {!preview && !commitResult && (
+        <div>
+          <div style={{ fontSize: 13, color: '#475569', lineHeight: 1.6, marginBottom: 14 }}>
+            Two formats accepted:
+            <ul style={{ marginTop: 6, marginBottom: 0, paddingLeft: 20 }}>
+              <li><strong>LedgerPro CSV template</strong> — columns: Code, Name, Type, SubType, Description, Parent Code. <button style={{ ...S.textBtn, padding: 0 }} onClick={downloadTemplate}>Download template</button></li>
+              <li><strong>QuickBooks IIF</strong> — exported from QuickBooks Desktop ("File → Utilities → Export → Lists to IIF Files → Chart of Accounts"). QB account types (BANK, AR, AP, INC, etc.) are mapped automatically.</li>
+            </ul>
+          </div>
+
+          <div
+            onDragOver={e => e.preventDefault()}
+            onDrop={onDrop}
+            style={{ border: '2px dashed #cbd5e1', borderRadius: 8, padding: 28, textAlign: 'center', background: '#f8fafc', marginBottom: 14 }}
+          >
+            <div style={{ fontSize: 13, color: '#64748b', marginBottom: 10 }}>Drag & drop a .csv or .iif file here, or</div>
+            <label style={{ ...S.btn, display: 'inline-block', cursor: 'pointer' }}>
+              Choose file
+              <input
+                type="file"
+                accept=".csv,.iif,.txt"
+                style={{ display: 'none' }}
+                onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f) }}
+              />
+            </label>
+            {filename && <div style={{ fontSize: 12, color: '#0891b2', marginTop: 10 }}>Selected: <strong>{filename}</strong> ({content.length.toLocaleString()} chars)</div>}
+          </div>
+
+          <details style={{ marginBottom: 14 }}>
+            <summary style={{ cursor: 'pointer', fontSize: 12, color: '#64748b' }}>Or paste the file content here</summary>
+            <textarea
+              value={content}
+              onChange={e => { setContent(e.target.value); if (!filename) setFilename('paste.csv') }}
+              placeholder="Paste CSV or IIF content..."
+              style={{ width: '100%', minHeight: 140, fontFamily: 'monospace', fontSize: 11, padding: 10, border: '1px solid #e2e8f0', borderRadius: 6, marginTop: 8 }}
+            />
+          </details>
+
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button style={{ ...S.btn, ...S.btnPrimary }} disabled={!content || busy} onClick={runPreview}>{busy ? 'Analyzing…' : 'Preview import'}</button>
+            <button style={S.btn} onClick={onClose}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {/* Stage 2: preview */}
+      {preview && !commitResult && (
+        <div>
+          <div style={{ display: 'flex', gap: 12, marginBottom: 12, fontSize: 13 }}>
+            <span style={{ color: '#64748b' }}>Format: <strong>{preview.format.toUpperCase()}</strong></span>
+            <span style={{ color: '#16a34a' }}><strong>{preview.summary.create}</strong> new</span>
+            <span style={{ color: '#1d4ed8' }}><strong>{preview.summary.update}</strong> update</span>
+            <span style={{ color: '#dc2626' }}><strong>{preview.summary.conflict}</strong> conflict</span>
+            {preview.summary.skip > 0 && <span style={{ color: '#94a3b8' }}><strong>{preview.summary.skip}</strong> skip</span>}
+          </div>
+
+          {preview.parseErrors.length > 0 && (
+            <div style={{ marginBottom: 12, padding: 10, background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, fontSize: 12 }}>
+              <strong style={{ color: '#991b1b' }}>{preview.parseErrors.length} parse warning{preview.parseErrors.length === 1 ? '' : 's'}:</strong>
+              <ul style={{ margin: '6px 0 0', paddingLeft: 20, color: '#991b1b' }}>
+                {preview.parseErrors.slice(0, 5).map((e, i) => <li key={i}>{e.line ? `Line ${e.line}: ` : ''}{e.message}</li>)}
+                {preview.parseErrors.length > 5 && <li>…and {preview.parseErrors.length - 5} more</li>}
+              </ul>
+            </div>
+          )}
+
+          <div style={{ maxHeight: 280, overflow: 'auto', border: '1px solid #e2e8f0', borderRadius: 6, marginBottom: 14 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead>
+                <tr>
+                  {['', 'Code', 'Name', 'Type', 'Sub-type', 'Parent', 'Notes'].map(h => (
+                    <th key={h} style={{ background: '#f8fafc', padding: '6px 8px', textAlign: 'left', fontWeight: 600, fontSize: 11, color: '#475569', borderBottom: '1px solid #e2e8f0', position: 'sticky', top: 0 }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {preview.rows.map((r, i) => {
+                  const tone =
+                    r.action === 'create' ? { bg: '#f0fdf4', fg: '#166534' } :
+                    r.action === 'update' ? { bg: '#eff6ff', fg: '#1d4ed8' } :
+                    r.action === 'conflict' ? { bg: '#fef2f2', fg: '#991b1b' } :
+                    { bg: '#f1f5f9', fg: '#64748b' }
+                  return (
+                    <tr key={i}>
+                      <td style={{ padding: '4px 8px', borderBottom: '1px solid #f1f5f9' }}>
+                        <span style={{ background: tone.bg, color: tone.fg, padding: '1px 6px', borderRadius: 3, fontSize: 10, fontWeight: 600 }}>{r.action}</span>
+                      </td>
+                      <td style={{ padding: '4px 8px', fontFamily: 'monospace', borderBottom: '1px solid #f1f5f9' }}>{r.row.code}</td>
+                      <td style={{ padding: '4px 8px', borderBottom: '1px solid #f1f5f9' }}>{r.row.name}</td>
+                      <td style={{ padding: '4px 8px', borderBottom: '1px solid #f1f5f9' }}>{r.row.type}</td>
+                      <td style={{ padding: '4px 8px', color: '#64748b', borderBottom: '1px solid #f1f5f9' }}>{r.row.subType ?? '—'}</td>
+                      <td style={{ padding: '4px 8px', color: '#64748b', borderBottom: '1px solid #f1f5f9' }}>{r.row.parentCode ?? r.row.parentName ?? '—'}</td>
+                      <td style={{ padding: '4px 8px', color: tone.fg, borderBottom: '1px solid #f1f5f9', fontSize: 11 }}>
+                        {r.reason ?? r.row.warnings.join('; ')}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {preview.summary.conflict > 0 && (
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, fontSize: 13, color: '#475569' }}>
+              <input type="checkbox" checked={overwriteOnConflict} onChange={e => setOverwriteOnConflict(e.target.checked)} />
+              <span>Overwrite name-conflict rows (reassigns the existing account to the import's code). <strong>Use carefully</strong> — type conflicts are never overwritten.</span>
+            </label>
+          )}
+
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              style={{ ...S.btn, ...S.btnPrimary, opacity: (preview.summary.create + preview.summary.update + (overwriteOnConflict ? preview.summary.conflict : 0)) === 0 ? 0.5 : 1 }}
+              disabled={busy || (preview.summary.create + preview.summary.update + (overwriteOnConflict ? preview.summary.conflict : 0)) === 0}
+              onClick={runCommit}
+            >
+              {busy ? 'Importing…' : `Import ${preview.summary.create + preview.summary.update + (overwriteOnConflict ? preview.summary.conflict : 0)} account${preview.summary.create + preview.summary.update === 1 ? '' : 's'}`}
+            </button>
+            <button style={S.btn} onClick={() => setPreview(null)}>Back</button>
+          </div>
+        </div>
+      )}
+
+      {/* Stage 3: result */}
+      {commitResult && (
+        <div>
+          <div style={{ padding: 14, background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, marginBottom: 14 }}>
+            <div style={{ fontWeight: 600, color: '#166534', marginBottom: 6 }}>✓ Import complete</div>
+            <div style={{ fontSize: 13, color: '#166534', lineHeight: 1.6 }}>
+              Created: <strong>{commitResult.created}</strong> • Updated: <strong>{commitResult.updated}</strong>
+              {commitResult.skipped > 0 && <> • Skipped: <strong>{commitResult.skipped}</strong></>}
+              {commitResult.parentLinks > 0 && <> • Parent links resolved: <strong>{commitResult.parentLinks}</strong></>}
+            </div>
+          </div>
+          {commitResult.errors.length > 0 && (
+            <div style={{ padding: 10, background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, fontSize: 12, marginBottom: 14 }}>
+              <strong style={{ color: '#991b1b' }}>{commitResult.errors.length} error{commitResult.errors.length === 1 ? '' : 's'}:</strong>
+              <ul style={{ margin: '6px 0 0', paddingLeft: 20, color: '#991b1b' }}>
+                {commitResult.errors.slice(0, 10).map((e, i) => <li key={i}>{e.code}: {e.message}</li>)}
+                {commitResult.errors.length > 10 && <li>…and {commitResult.errors.length - 10} more</li>}
+              </ul>
+            </div>
+          )}
+          <button style={{ ...S.btn, ...S.btnPrimary }} onClick={onImported}>Done</button>
+        </div>
+      )}
+    </ModalOverlay>
   )
 }
 
