@@ -38,6 +38,7 @@ const MODULE_ACCESS: Record<string, string[]> = {
   ap:         ['OWNER','ADMIN','ACCOUNTANT','AP_CLERK'],
   payments:   ['OWNER','ADMIN','ACCOUNTANT','AP_CLERK'],
   recon:      ['OWNER','ADMIN','ACCOUNTANT','AUDITOR'],
+  periods:    ['OWNER','ADMIN'],
   payroll:    ['OWNER','ADMIN','PAYROLL_CLERK'],
   w2:         ['OWNER','ADMIN','PAYROLL_CLERK'],
   users:      ['OWNER','ADMIN'],
@@ -86,6 +87,7 @@ export default function LedgerProApp() {
     { id: 'ap',        label: 'AP Tracker',         icon: '◎' },
     { id: 'payments',  label: 'Payments',           icon: '✓' },
     { id: 'recon',     label: 'Bank Recon',         icon: '↔' },
+    { id: 'periods',   label: 'Period Locks',       icon: '🔒' },
     { id: 'payroll',   label: 'Payroll',            icon: '◷' },
     { id: 'w2',        label: 'W-2 / 1040-K',       icon: '◻' },
     { id: 'users',     label: 'User Management',    icon: '◉' },
@@ -199,6 +201,7 @@ export default function LedgerProApp() {
                 {page === 'ap'        && <ApPage         showToast={showToast} />}
                 {page === 'payments'  && <PaymentsPage   showToast={showToast} />}
                 {page === 'recon'     && <ReconPage      showToast={showToast} />}
+                {page === 'periods'   && <PeriodsPage    showToast={showToast} />}
                 {page === 'payroll'   && <PayrollPage    showToast={showToast} />}
                 {page === 'w2'        && <W2Page         showToast={showToast} />}
                 {page === 'users'     && <UsersPage      showToast={showToast} />}
@@ -227,6 +230,17 @@ function AuthScreen({ authPage, setAuthPage, onAuth }: {
   const [form, setForm] = useState({ email: '', password: '', name: '', firmName: '' })
   const [err, setErr] = useState('')
   const [loading, setLoading] = useState(false)
+  // 2FA challenge state — after password succeeds for a 2FA user, we get a
+  // short-lived challenge token and ask for the code without re-prompting for
+  // password.
+  const [challengeToken, setChallengeToken] = useState<string | null>(null)
+  const [twoFactorCode, setTwoFactorCode] = useState('')
+
+  const finishAuth = async (user: User) => {
+    const entsRes = await fetch('/api/entities')
+    const ents = entsRes.ok ? await entsRes.json() : []
+    onAuth(user, ents)
+  }
 
   const handle = async (e: React.FormEvent) => {
     e.preventDefault(); setErr(''); setLoading(true)
@@ -238,9 +252,26 @@ function AuthScreen({ authPage, setAuthPage, onAuth }: {
       })
       const data = await res.json()
       if (!res.ok) { setErr(data.error ?? 'Authentication failed'); return }
-      const entsRes = await fetch('/api/entities')
-      const ents = entsRes.ok ? await entsRes.json() : []
-      onAuth(data.user, ents)
+      // Branch 1: server says 2FA required → show code prompt.
+      if (data.requires2fa && data.challengeToken) {
+        setChallengeToken(data.challengeToken)
+        return
+      }
+      // Branch 2: normal login/register success.
+      await finishAuth(data.user)
+    } catch { setErr('Network error') } finally { setLoading(false) }
+  }
+
+  const submitChallenge = async (e: React.FormEvent) => {
+    e.preventDefault(); setErr(''); setLoading(true)
+    try {
+      const res = await fetch('/api/auth/2fa/challenge', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ challengeToken, code: twoFactorCode }),
+      })
+      const data = await res.json()
+      if (!res.ok) { setErr(data.error ?? 'Invalid code'); return }
+      await finishAuth(data.user)
     } catch { setErr('Network error') } finally { setLoading(false) }
   }
 
@@ -253,38 +284,64 @@ function AuthScreen({ authPage, setAuthPage, onAuth }: {
           <div style={S.authLogo}>L</div>
           <div style={{ fontSize: 24, fontWeight: 700, letterSpacing: -0.5 }}>LedgerPro</div>
           <div style={{ fontSize: 13, color: '#64748b', marginTop: 4 }}>
-            Multi-entity accounting platform
+            {challengeToken ? 'Two-factor authentication' : 'Multi-entity accounting platform'}
           </div>
         </div>
 
-        <form onSubmit={handle}>
-          {authPage === 'register' && (
-            <>
-              <label style={S.label}>Full name</label>
-              <input style={S.input} value={form.name} onChange={e => setForm(f => ({...f, name: e.target.value}))} placeholder="Jane Smith" required />
-              <label style={S.label}>Company / Firm name</label>
-              <input style={S.input} value={form.firmName} onChange={e => setForm(f => ({...f, firmName: e.target.value}))} placeholder="Apex Accounting LLC" required />
-            </>
-          )}
-          <label style={S.label}>Email</label>
-          <input style={S.input} type="email" value={form.email} onChange={e => setForm(f => ({...f, email: e.target.value}))} placeholder="you@firm.com" required />
-          <label style={S.label}>Password</label>
-          <input style={S.input} type="password" value={form.password} onChange={e => setForm(f => ({...f, password: e.target.value}))} placeholder="••••••••" required />
-          {err && <div style={S.errMsg}>{err}</div>}
-          <button style={{ ...S.btn, ...S.btnPrimary, width: '100%', marginTop: 8, justifyContent: 'center', opacity: loading ? 0.7 : 1 }} disabled={loading}>
-            {loading ? 'Please wait…' : authPage === 'login' ? 'Sign in' : 'Create account'}
-          </button>
-        </form>
+        {challengeToken ? (
+          <form onSubmit={submitChallenge}>
+            <div style={{ fontSize: 13, color: '#475569', marginBottom: 14, lineHeight: 1.5 }}>
+              Open your authenticator app and enter the 6-digit code. Or use one of your one-time backup codes.
+            </div>
+            <label style={S.label}>Authentication code</label>
+            <input
+              style={{ ...S.input, fontSize: 18, fontFamily: 'monospace', letterSpacing: 4, textAlign: 'center' }}
+              value={twoFactorCode}
+              onChange={e => setTwoFactorCode(e.target.value)}
+              placeholder="123456"
+              autoFocus
+              required
+            />
+            {err && <div style={S.errMsg}>{err}</div>}
+            <button style={{ ...S.btn, ...S.btnPrimary, width: '100%', marginTop: 8, justifyContent: 'center', opacity: loading ? 0.7 : 1 }} disabled={loading}>
+              {loading ? 'Verifying…' : 'Verify'}
+            </button>
+            <div style={{ textAlign: 'center', marginTop: 14, fontSize: 13, color: '#64748b' }}>
+              <button type="button" style={S.textBtn} onClick={() => { setChallengeToken(null); setTwoFactorCode(''); setErr('') }}>Cancel and sign in as another user</button>
+            </div>
+          </form>
+        ) : (
+          <form onSubmit={handle}>
+            {authPage === 'register' && (
+              <>
+                <label style={S.label}>Full name</label>
+                <input style={S.input} value={form.name} onChange={e => setForm(f => ({...f, name: e.target.value}))} placeholder="Jane Smith" required />
+                <label style={S.label}>Company / Firm name</label>
+                <input style={S.input} value={form.firmName} onChange={e => setForm(f => ({...f, firmName: e.target.value}))} placeholder="Apex Accounting LLC" required />
+              </>
+            )}
+            <label style={S.label}>Email</label>
+            <input style={S.input} type="email" value={form.email} onChange={e => setForm(f => ({...f, email: e.target.value}))} placeholder="you@firm.com" required />
+            <label style={S.label}>Password</label>
+            <input style={S.input} type="password" value={form.password} onChange={e => setForm(f => ({...f, password: e.target.value}))} placeholder="••••••••" required />
+            {err && <div style={S.errMsg}>{err}</div>}
+            <button style={{ ...S.btn, ...S.btnPrimary, width: '100%', marginTop: 8, justifyContent: 'center', opacity: loading ? 0.7 : 1 }} disabled={loading}>
+              {loading ? 'Please wait…' : authPage === 'login' ? 'Sign in' : 'Create account'}
+            </button>
+          </form>
+        )}
 
-        <div style={{ textAlign: 'center', marginTop: 16, fontSize: 13, color: '#64748b' }}>
-          {authPage === 'login' ? (
-            <>No account? <button style={S.textBtn} onClick={() => setAuthPage('register')}>Register</button></>
-          ) : (
-            <>Have an account? <button style={S.textBtn} onClick={() => setAuthPage('login')}>Sign in</button></>
-          )}
-        </div>
+        {!challengeToken && (
+          <div style={{ textAlign: 'center', marginTop: 16, fontSize: 13, color: '#64748b' }}>
+            {authPage === 'login' ? (
+              <>No account? <button style={S.textBtn} onClick={() => setAuthPage('register')}>Register</button></>
+            ) : (
+              <>Have an account? <button style={S.textBtn} onClick={() => setAuthPage('login')}>Sign in</button></>
+            )}
+          </div>
+        )}
 
-        {authPage === 'login' && (
+        {authPage === 'login' && !challengeToken && (
           <div style={{ marginTop: 20, padding: '14px 16px', background: '#f8fafc', borderRadius: 10, border: '1px solid #e2e8f0' }}>
             <div style={{ fontSize: 11, fontWeight: 600, color: '#64748b', marginBottom: 8, textTransform: 'uppercase', letterSpacing: .06 }}>Demo accounts</div>
             {[
@@ -1209,7 +1266,7 @@ function UsersPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => vo
 
 // ─── Settings ─────────────────────────────────────────────────────────────────
 function SettingsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => void }) {
-  const { currentEntity, entities, setCurrentEntity } = useApp()
+  const { currentEntity } = useApp()
   const [form, setForm] = useState({ name: currentEntity?.name??'', email:'', taxId:'', address:'', currency:'USD', fiscalMonth:1 })
 
   useEffect(() => {
@@ -1217,8 +1274,8 @@ function SettingsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') =>
   }, [currentEntity])
 
   return (
-    <div style={{ maxWidth: 600 }}>
-      <div style={S.card}>
+    <div style={{ maxWidth: 700 }}>
+      <div style={{ ...S.card, marginBottom: 16 }}>
         <div style={S.cardHeader}>Entity settings — {currentEntity?.name}</div>
         <div style={S.formGrid}>
           <div><label style={S.label}>Legal entity name</label><input style={S.input} value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))} /></div>
@@ -1238,6 +1295,221 @@ function SettingsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') =>
         <div><label style={S.label}>Address</label><input style={S.input} value={form.address} onChange={e=>setForm(f=>({...f,address:e.target.value}))} placeholder="123 Main St, New York, NY 10001" /></div>
         <button style={{...S.btn,...S.btnPrimary,marginTop:8}} onClick={() => showToast('Settings saved')}>Save settings</button>
       </div>
+
+      <TwoFactorPanel showToast={showToast} />
+    </div>
+  )
+}
+
+// ─── Two-Factor Authentication panel ─────────────────────────────────────────
+function TwoFactorPanel({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => void }) {
+  type Phase = 'idle' | 'setup' | 'showing-codes' | 'disable' | 'regenerate'
+  const [phase, setPhase] = useState<Phase>('idle')
+  const [status, setStatus] = useState<{ enabled: boolean; backupCodesRemaining: number } | null>(null)
+  const [setupData, setSetupData] = useState<{ secret: string; otpauthUri: string; accountName: string; issuer: string } | null>(null)
+  const [verifyCode, setVerifyCode] = useState('')
+  const [disablePassword, setDisablePassword] = useState('')
+  const [disableCode, setDisableCode] = useState('')
+  const [regenCode, setRegenCode] = useState('')
+  const [shownCodes, setShownCodes] = useState<string[] | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  const refreshStatus = useCallback(async () => {
+    const res = await fetch('/api/auth/2fa/manage', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'status' }),
+    })
+    if (res.ok) setStatus(await res.json())
+  }, [])
+
+  useEffect(() => { refreshStatus() }, [refreshStatus])
+
+  const startSetup = async () => {
+    setBusy(true)
+    try {
+      const res = await fetch('/api/auth/2fa/setup', { method: 'POST', headers: { 'Content-Type': 'application/json' } })
+      const data = await res.json()
+      if (!res.ok) return showToast(data.error ?? 'Setup failed', 'err')
+      setSetupData(data); setPhase('setup'); setVerifyCode('')
+    } finally { setBusy(false) }
+  }
+
+  const confirmSetup = async () => {
+    setBusy(true)
+    try {
+      const res = await fetch('/api/auth/2fa/verify', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: verifyCode }),
+      })
+      const data = await res.json()
+      if (!res.ok) return showToast(data.error ?? 'Verification failed', 'err')
+      setShownCodes(data.backupCodes); setPhase('showing-codes'); setSetupData(null)
+      await refreshStatus()
+      showToast('2FA enabled')
+    } finally { setBusy(false) }
+  }
+
+  const confirmDisable = async () => {
+    setBusy(true)
+    try {
+      const res = await fetch('/api/auth/2fa/manage', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'disable', password: disablePassword, code: disableCode }),
+      })
+      const data = await res.json()
+      if (!res.ok) return showToast(data.error ?? 'Disable failed', 'err')
+      setPhase('idle'); setDisablePassword(''); setDisableCode('')
+      await refreshStatus()
+      showToast('2FA disabled')
+    } finally { setBusy(false) }
+  }
+
+  const confirmRegenerate = async () => {
+    setBusy(true)
+    try {
+      const res = await fetch('/api/auth/2fa/manage', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'regenerate-codes', code: regenCode }),
+      })
+      const data = await res.json()
+      if (!res.ok) return showToast(data.error ?? 'Regenerate failed', 'err')
+      setShownCodes(data.backupCodes); setRegenCode(''); setPhase('showing-codes')
+      await refreshStatus()
+      showToast('Backup codes regenerated')
+    } finally { setBusy(false) }
+  }
+
+  const copy = (text: string) => {
+    if (typeof navigator !== 'undefined' && navigator.clipboard) {
+      navigator.clipboard.writeText(text).then(() => showToast('Copied to clipboard'))
+    }
+  }
+
+  const downloadCodes = () => {
+    if (!shownCodes) return
+    const blob = new Blob(
+      [`LedgerPro — 2FA Backup Codes\nGenerated: ${new Date().toISOString()}\n\nEach code can be used ONCE.\nKeep this file somewhere safe.\n\n${shownCodes.join('\n')}\n`],
+      { type: 'text/plain' }
+    )
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url; a.download = 'ledgerpro-backup-codes.txt'; a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  return (
+    <div style={S.card}>
+      <div style={S.cardHeader}>
+        Two-factor authentication
+        {status?.enabled && <span style={{ ...S.greenBadge, marginLeft: 10 }}>ENABLED</span>}
+      </div>
+
+      {/* ── IDLE: not in any flow ── */}
+      {phase === 'idle' && (
+        <>
+          <div style={{ fontSize: 13, color: '#475569', lineHeight: 1.6, marginBottom: 14 }}>
+            {status?.enabled
+              ? `2FA is active. You'll be asked for a 6-digit code at sign-in. ${status.backupCodesRemaining} backup code${status.backupCodesRemaining === 1 ? '' : 's'} remaining.`
+              : 'Protect your account with an authenticator app like Google Authenticator, Authy, or 1Password. Strongly recommended for any account with access to financial data.'}
+          </div>
+          {!status?.enabled ? (
+            <button style={{ ...S.btn, ...S.btnPrimary }} onClick={startSetup} disabled={busy}>Enable 2FA</button>
+          ) : (
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button style={S.btn} onClick={() => setPhase('regenerate')}>Regenerate backup codes</button>
+              <button style={{ ...S.btn, color: '#dc2626', borderColor: '#fecaca' }} onClick={() => setPhase('disable')}>Disable 2FA</button>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* ── SETUP: show secret + ask for verification code ── */}
+      {phase === 'setup' && setupData && (
+        <div>
+          <div style={{ fontSize: 13, color: '#475569', lineHeight: 1.6, marginBottom: 12 }}>
+            <strong>Step 1:</strong> Open your authenticator app and add a new account.
+          </div>
+          <div style={{ background: '#f8fafc', padding: 14, borderRadius: 8, border: '1px solid #e2e8f0', marginBottom: 14 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: '#64748b', marginBottom: 6, textTransform: 'uppercase', letterSpacing: .06 }}>Account name</div>
+            <div style={{ fontFamily: 'monospace', fontSize: 13, marginBottom: 10 }}>{setupData.issuer}: {setupData.accountName}</div>
+            <div style={{ fontSize: 11, fontWeight: 600, color: '#64748b', marginBottom: 6, textTransform: 'uppercase', letterSpacing: .06 }}>Secret key (Time-based, 6 digits, 30 sec)</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <code style={{ flex: 1, fontFamily: 'monospace', fontSize: 14, fontWeight: 600, letterSpacing: 1, wordBreak: 'break-all' }}>{setupData.secret}</code>
+              <button style={S.btn} onClick={() => copy(setupData.secret)}>Copy</button>
+            </div>
+            <div style={{ fontSize: 12, color: '#64748b', marginTop: 10 }}>
+              On mobile? <a href={setupData.otpauthUri} style={{ color: '#0891b2', fontWeight: 500 }}>Tap to add automatically</a> — your authenticator app will register the key.
+            </div>
+          </div>
+
+          <div style={{ fontSize: 13, color: '#475569', lineHeight: 1.6, marginBottom: 8 }}>
+            <strong>Step 2:</strong> Enter the 6-digit code your authenticator shows.
+          </div>
+          <input
+            style={{ ...S.input, fontSize: 18, fontFamily: 'monospace', letterSpacing: 4, textAlign: 'center', maxWidth: 240 }}
+            value={verifyCode}
+            onChange={e => setVerifyCode(e.target.value)}
+            placeholder="123456"
+            autoFocus
+          />
+          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+            <button style={{ ...S.btn, ...S.btnPrimary }} disabled={busy || verifyCode.length < 6} onClick={confirmSetup}>Verify & enable</button>
+            <button style={S.btn} onClick={() => { setPhase('idle'); setSetupData(null); setVerifyCode('') }}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {/* ── SHOWING BACKUP CODES: shown exactly once ── */}
+      {phase === 'showing-codes' && shownCodes && (
+        <div>
+          <div style={{ padding: 12, background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, marginBottom: 14 }}>
+            <div style={{ fontWeight: 600, color: '#92400e', marginBottom: 4 }}>⚠ Save these backup codes now</div>
+            <div style={{ fontSize: 13, color: '#92400e', lineHeight: 1.5 }}>
+              Each code works once if you lose access to your authenticator. You won't see them again — save them in a password manager or print them.
+            </div>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8, fontFamily: 'monospace', fontSize: 15, padding: 14, background: '#f8fafc', borderRadius: 8, border: '1px solid #e2e8f0', marginBottom: 14 }}>
+            {shownCodes.map((c, i) => <div key={i} style={{ padding: '6px 10px', background: '#fff', borderRadius: 4 }}>{c}</div>)}
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button style={{ ...S.btn, ...S.btnPrimary }} onClick={downloadCodes}>Download as text file</button>
+            <button style={S.btn} onClick={() => copy(shownCodes.join('\n'))}>Copy all</button>
+            <button style={S.btn} onClick={() => { setPhase('idle'); setShownCodes(null) }}>I've saved them</button>
+          </div>
+        </div>
+      )}
+
+      {/* ── DISABLE: requires password + code ── */}
+      {phase === 'disable' && (
+        <div>
+          <div style={{ fontSize: 13, color: '#475569', lineHeight: 1.6, marginBottom: 12 }}>
+            To turn off 2FA, confirm your password and enter a current 6-digit code (or one backup code).
+          </div>
+          <label style={S.label}>Password</label>
+          <input style={S.input} type="password" value={disablePassword} onChange={e => setDisablePassword(e.target.value)} placeholder="••••••••" />
+          <label style={S.label}>Authentication code</label>
+          <input style={{ ...S.input, fontFamily: 'monospace', letterSpacing: 4, textAlign: 'center', maxWidth: 240 }} value={disableCode} onChange={e => setDisableCode(e.target.value)} placeholder="123456" />
+          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+            <button style={{ ...S.btn, color: '#dc2626', borderColor: '#fecaca' }} disabled={busy || !disablePassword || disableCode.length < 6} onClick={confirmDisable}>Disable 2FA</button>
+            <button style={S.btn} onClick={() => { setPhase('idle'); setDisablePassword(''); setDisableCode('') }}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {/* ── REGENERATE: requires current code ── */}
+      {phase === 'regenerate' && (
+        <div>
+          <div style={{ fontSize: 13, color: '#475569', lineHeight: 1.6, marginBottom: 12 }}>
+            Generating new backup codes will invalidate all existing ones. Enter a current 6-digit code (or one unused backup code) to confirm.
+          </div>
+          <label style={S.label}>Authentication code</label>
+          <input style={{ ...S.input, fontFamily: 'monospace', letterSpacing: 4, textAlign: 'center', maxWidth: 240 }} value={regenCode} onChange={e => setRegenCode(e.target.value)} placeholder="123456" autoFocus />
+          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+            <button style={{ ...S.btn, ...S.btnPrimary }} disabled={busy || regenCode.length < 6} onClick={confirmRegenerate}>Regenerate</button>
+            <button style={S.btn} onClick={() => { setPhase('idle'); setRegenCode('') }}>Cancel</button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -1741,6 +2013,143 @@ function ReconPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => vo
                 <td style={{ ...S.td, textAlign:'right' }}><button style={S.textBtn} onClick={() => setActiveId(r.id)}>Open →</button></td>
               </tr>
             ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+// ─── Period Locks ─────────────────────────────────────────────────────────────
+interface PeriodLock {
+  id: string
+  periodEnd: string
+  lockedAt: string
+  lockedBy: string | null
+  reason: string | null
+  releasedAt: string | null
+  releasedBy: string | null
+}
+
+function PeriodsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => void }) {
+  const { currentEntity, role } = useApp()
+  const [locks, setLocks] = useState<PeriodLock[]>([])
+  const [showForm, setShowForm] = useState(false)
+  const today = new Date().toISOString().slice(0, 10)
+  // Default lock-through: end of last month.
+  const defaultPeriodEnd = (() => {
+    const d = new Date()
+    d.setDate(0) // last day of previous month
+    return d.toISOString().slice(0, 10)
+  })()
+  const [form, setForm] = useState({ periodEnd: defaultPeriodEnd, reason: '' })
+  const canWrite = ['OWNER','ADMIN'].includes(role)
+
+  const load = useCallback(() => {
+    if (!currentEntity) return
+    fetch(`/api/periods?entityId=${currentEntity.id}`).then(r => r.json()).then(d => setLocks(d.locks ?? []))
+  }, [currentEntity])
+
+  useEffect(() => { load() }, [load])
+
+  const activeLock = locks.find(l => !l.releasedAt)
+  // Active cutoff is the latest unreleased lock's periodEnd.
+  const activeCutoff = locks
+    .filter(l => !l.releasedAt)
+    .map(l => l.periodEnd)
+    .sort()
+    .pop() ?? null
+
+  const createLock = async () => {
+    if (!currentEntity) return
+    if (!form.periodEnd) return showToast('Pick a period-end date', 'err')
+    if (activeCutoff && form.periodEnd <= activeCutoff) {
+      return showToast(`A lock already covers ${activeCutoff}. Pick a later date.`, 'err')
+    }
+    const res = await fetch('/api/periods', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ entityId: currentEntity.id, periodEnd: form.periodEnd, reason: form.reason || undefined }),
+    })
+    if (res.ok) {
+      showToast(`Period locked through ${form.periodEnd}`)
+      setShowForm(false); setForm({ periodEnd: defaultPeriodEnd, reason: '' }); load()
+    } else {
+      const d = await res.json(); showToast(d.error ?? 'Error', 'err')
+    }
+  }
+
+  const releaseLock = async (id: string) => {
+    if (!currentEntity) return
+    if (!confirm('Release this lock? Entries within the period will become editable again.')) return
+    const res = await fetch('/api/periods', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ entityId: currentEntity.id, id }),
+    })
+    if (res.ok) { showToast('Lock released'); load() }
+    else { const d = await res.json(); showToast(d.error ?? 'Error', 'err') }
+  }
+
+  return (
+    <div>
+      <div style={S.pageActions}>
+        <div style={{ fontSize: 13, color: '#475569', lineHeight: 1.5 }}>
+          {activeCutoff ? (
+            <>Books locked through <strong>{fmtDate(activeCutoff)}</strong>. Journal entries and payments dated on or before this date cannot be created or modified.</>
+          ) : (
+            <>No active lock. All historical periods are open for edits.</>
+          )}
+        </div>
+        {canWrite && <button style={{ ...S.btn, ...S.btnPrimary }} onClick={() => setShowForm(o => !o)}>+ Lock period</button>}
+      </div>
+
+      {showForm && (
+        <div style={{ ...S.card, marginBottom: 16 }}>
+          <div style={S.cardHeader}>Lock a period</div>
+          <div style={{ fontSize: 13, color: '#475569', marginBottom: 14, lineHeight: 1.5 }}>
+            Close the books up to and including this date. After locking, no entries dated on or before <strong>{form.periodEnd}</strong> can be created or modified — including payment posts and voids. OWNER or ADMIN can release the lock later if you need to make corrections.
+          </div>
+          <div style={S.formGrid}>
+            <div>
+              <label style={S.label}>Lock through (inclusive)</label>
+              <input style={S.input} type="date" value={form.periodEnd} max={today} onChange={e => setForm(f => ({ ...f, periodEnd: e.target.value }))} />
+            </div>
+            <div style={{ gridColumn: '1 / -1' }}>
+              <label style={S.label}>Reason (optional)</label>
+              <input style={S.input} value={form.reason} onChange={e => setForm(f => ({ ...f, reason: e.target.value }))} placeholder="e.g. April 2026 close" />
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button style={{ ...S.btn, ...S.btnPrimary }} onClick={createLock}>Lock period</button>
+            <button style={S.btn} onClick={() => setShowForm(false)}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      <div style={S.card}>
+        <div style={S.cardHeader}>Lock history</div>
+        <table style={S.table}>
+          <thead><tr>{['Period end','Locked at','Reason','Released at','Status',''].map(h => <th key={h} style={S.th}>{h}</th>)}</tr></thead>
+          <tbody>
+            {locks.length === 0 && <tr><td style={{ ...S.td, textAlign: 'center', color: '#94a3b8' }} colSpan={6}>No locks created yet</td></tr>}
+            {locks.map(l => {
+              const active = !l.releasedAt
+              return (
+                <tr key={l.id} style={{ background: active ? '#fffbeb' : 'transparent' }}>
+                  <td style={{ ...S.td, fontWeight: 600 }}>{fmtDate(l.periodEnd)}</td>
+                  <td style={{ ...S.td, fontSize: 12, color: '#64748b' }}>{fmtDate(l.lockedAt)}</td>
+                  <td style={{ ...S.td, fontSize: 12 }}>{l.reason ?? <span style={{ color: '#94a3b8' }}>—</span>}</td>
+                  <td style={{ ...S.td, fontSize: 12, color: '#64748b' }}>{l.releasedAt ? fmtDate(l.releasedAt) : <span style={{ color: '#94a3b8' }}>—</span>}</td>
+                  <td style={S.td}>
+                    <span style={{ ...S.greenBadge, background: active ? '#fef3c7' : '#f0fdf4', color: active ? '#92400e' : '#166534' }}>
+                      {active ? 'ACTIVE' : 'RELEASED'}
+                    </span>
+                  </td>
+                  <td style={{ ...S.td, textAlign: 'right' }}>
+                    {active && canWrite && <button style={{ ...S.textBtn, color: '#dc2626' }} onClick={() => releaseLock(l.id)}>Release</button>}
+                  </td>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       </div>

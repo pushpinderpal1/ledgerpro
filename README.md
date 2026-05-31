@@ -1,71 +1,30 @@
-# LedgerPro update — hardening + 2FA pass
+# LedgerPro UI update — 2FA settings + Period locks
 
-Extract this zip at the **root of your `ledgerpro` repo** (the folder that
-contains `package.json` and `prisma/`). Existing files will be overwritten;
-new files will be created in the right folders.
+Extract at the root of your `ledgerpro` repo (the folder containing
+`package.json` and `prisma/`). Two files:
 
-## What's in here
+- `src/app/page.tsx` — replaces existing. Adds:
+  - 2FA panel in Settings (enable / verify / show backup codes / disable / regenerate)
+  - Login screen 2FA challenge step (asks for a code after password when 2FA is on)
+  - New **Period Locks** page (lock/release months for OWNER/ADMIN)
+- `docs/soft-delete-audit.md` — written audit, no code changes. Recommends
+  defensive triggers + a soft-delete on `LegalEntity` if you take it forward.
 
-- `prisma/schema.prisma` — schema with hardening + 2FA models (replaces existing)
-- `prisma/migrations/0003_hardening/migration.sql` — period locks + idempotency keys
-- `prisma/migrations/0004_two_factor/migration.sql` — TOTP + backup codes
-- `src/middleware.ts` — security headers + CSRF origin check (replaces existing)
-- `src/lib/auth/index.ts` — adds 2FA challenge-token helpers (replaces existing)
-- `src/lib/security/*` — rate-limit, headers, password, idempotency, encryption, TOTP, backup codes
-- `src/lib/periods/index.ts` — period locking enforcement
-- `src/lib/logger.ts`, `src/lib/errors.ts` — structured logging + Sentry-ready hook
-- `src/lib/payments/index.ts`, `src/lib/recon/{index,parse}.ts` — period-guarded + extracted parser
-- `src/app/api/auth/login/route.ts`, `register/route.ts` — rate-limited, password complexity, 2FA-aware
-- `src/app/api/auth/2fa/{setup,verify,challenge,manage}/route.ts` — 2FA endpoints
-- `src/app/api/payments/route.ts` — idempotency-key support
-- `src/app/api/periods/route.ts` — lock/release period endpoints
-- `src/app/api/health/route.ts` — `/api/health` and `/api/health?deep=1`
-- `package.json` — adds `tsx` devDep + `test` script (replaces existing)
-- `tests/*` — 68 tests, pure-logic, run with `npm test`
-- `infra/*` — AWS CDK stack (not used by Railway; ignore for now)
+## Deploy steps
 
-## Before you push
+1. Extract over the repo (overwrite `page.tsx`, add the new doc)
+2. Commit and push:
+   ```
+   git add -A
+   git commit -m "2FA settings UI + Period Locks UI + soft-delete audit"
+   git push
+   ```
+3. Watch Railway logs — no migrations, just a Next.js rebuild.
 
-### 1. Set ENCRYPTION_KEY in Railway
+## What you should see after deploy
 
-Generate a 32-byte key:
-```
-node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-```
-In Railway → Variables, add `ENCRYPTION_KEY` = the 64-char hex string.
+- Settings page now has a "Two-factor authentication" card below entity settings
+- New "Period Locks" item in the sidebar (only visible to OWNER/ADMIN)
+- Logging in as a 2FA-enabled user prompts for the 6-digit code
 
-This is used to encrypt TOTP secrets at rest. Without it the app falls back to
-deriving a key from `JWT_SECRET` and logs a warning — works but rotating
-`JWT_SECRET` would brick stored 2FA secrets.
-
-### 2. (Optional) Set TRUSTED_ORIGINS
-
-If you have additional origins that need to make cross-origin calls (e.g. a
-separate admin domain), set `TRUSTED_ORIGINS` as a comma-separated list.
-Otherwise the middleware only allows the current host.
-
-## After you push
-
-Railway will:
-1. Run `npm install` (picks up `tsx`)
-2. Run `prisma generate` (postinstall)
-3. Run `prisma migrate deploy` — applies both 0003 and 0004
-4. Build Next.js and start
-
-Watch for `All migrations have been successfully applied.` then `Ready in …ms`.
-
-## Running tests locally
-
-```
-npm install
-npm test
-```
-
-Should report `68 pass`. No database needed for any of them.
-
-## Notes
-
-- **No UI changes in this pass.** 2FA endpoints work via API only; UI to enable
-  2FA from the app comes in the next pass.
-- **infra/** is for a future AWS migration. It doesn't affect Railway. Safe to
-  keep in the repo; safe to delete if you want.
+No new environment variables. No new dependencies. No database changes.
