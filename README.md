@@ -1,51 +1,66 @@
-# LedgerPro QR-code update for 2FA setup
+# LedgerPro — QuickBooks-style Reports module
 
-Adds a "Scan QR code" button to the 2FA setup flow that opens a popup with a
-scannable QR rendered locally in the browser (no third-party services — the
-secret never leaves your app).
+Adds a full reports module modeled on QuickBooks: 10 reports across 3
+categories, a Reports landing page, customization bar with date-range
+presets, and CSV export.
 
 ## What's in this zip
 
-- `src/app/page.tsx` — replaces existing. Adds the QR modal to TwoFactorPanel.
-- `package.json` — replaces existing. Adds `qrcode` runtime dep and `@types/qrcode`.
+- `src/app/page.tsx` — replaces existing. Adds the Reports page, landing view,
+  customization bar, and 10 report renderers.
+- `src/lib/reports/index.ts` — extends the existing reports engine with new
+  reports: Statement of Cash Flows, Journal Report, A/P Aging Detail,
+  Expenses by Vendor, and Profit & Loss with comparison columns.
+- `src/app/api/reports/route.ts` — dispatches the new report types.
 
-## ⚠ Important: update the lock file before pushing
+## Reports included
 
-Because `package.json` changed, `package-lock.json` must be regenerated or
-Railway's `npm ci` will fail (same as last time).
+**Business overview**
+- Profit & Loss
+- Profit & Loss Comparison (current vs prior period vs prior year)
+- Balance Sheet
+- Statement of Cash Flows (indirect method)
 
-In `C:\ledgerpro`, after extracting this zip:
+**What you owe**
+- A/P Aging Summary (with bucket cards)
+- A/P Aging Detail (grouped by vendor)
+- Expenses by Vendor
 
-```
-npm install
-```
+**For my accountant**
+- Trial Balance
+- General Ledger (with running balance per account)
+- Journal Report
 
-Wait for it to finish (15-30 seconds). It updates `package-lock.json`.
+## Deploy steps
 
-Then commit and push:
+1. Extract zip at the root of your `ledgerpro` repo
+2. Commit + push:
+   ```
+   git add -A
+   git commit -m "QuickBooks-style reports module"
+   git push
+   ```
+3. No new env vars, no database migrations, no new dependencies.
 
-```
-git add -A
-git commit -m "Add QR code modal to 2FA setup"
-git push
-```
+## What you'll see
 
-## What you should see after deploy
+- New **Reports** item in the sidebar
+- Landing page shows reports grouped by category with search
+- Click a report → opens with customization bar (date presets like "This year",
+  "Last quarter", "YTD", "Custom") + the actual report
+- Each report has **Refresh**, **Export CSV**, and **Print** buttons
+- Reports render in clean QuickBooks-like layout with section headers,
+  subtotals, grand totals, and percentage indicators
 
-1. Go to **Settings** → click **Enable 2FA**
-2. The setup card now has a big "📱 Scan QR code" button at the top
-3. Click it — a popup appears with the QR code
-4. Open Google Authenticator on your phone → tap **+** → tap **Scan a QR code**
-5. Point your phone's camera at the QR on screen — it scans and adds the account
-6. Close the popup, enter the 6-digit code your authenticator shows
-7. You're 2FA-enabled
+## Notes
 
-The "Open on this device" link still works (taps open the authenticator app on
-mobile), and there's still a collapsible "Can't scan? Show secret to enter
-manually" section as fallback.
-
-## How it works under the hood
-
-The QR is generated locally using the `qrcode` library, lazy-loaded on first
-button click so it doesn't bloat the main bundle. The otpauth:// URI never
-touches any external server. The QR renders as inline SVG, sharp at any zoom.
+- All reports derive from POSTED journal entries only — drafts and voids never
+  affect output.
+- All money math uses integer-cent arithmetic against Decimal(18,2) columns.
+- The Statement of Cash Flows uses the indirect method with pragmatic heuristics
+  for account classification (cash/bank by account-code prefix or subType).
+  When you add explicit classification flags to your Chart of Accounts (e.g.
+  current vs long-term assets), the cash-flow report will get more accurate
+  without changes to the UI.
+- Comparison report compares against the same-length prior period AND the
+  same period one year ago.

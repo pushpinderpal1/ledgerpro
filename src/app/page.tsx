@@ -1,5 +1,5 @@
 'use client'
-import { useState, useEffect, useCallback, createContext, useContext } from 'react'
+import { useState, useEffect, useCallback, createContext, useContext, Fragment } from 'react'
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 interface Entity { id: string; name: string; slug: string; currency: string; userAccess?: { role: string }[] }
@@ -38,6 +38,7 @@ const MODULE_ACCESS: Record<string, string[]> = {
   ap:         ['OWNER','ADMIN','ACCOUNTANT','AP_CLERK'],
   payments:   ['OWNER','ADMIN','ACCOUNTANT','AP_CLERK'],
   recon:      ['OWNER','ADMIN','ACCOUNTANT','AUDITOR'],
+  reports:    ['OWNER','ADMIN','ACCOUNTANT','AUDITOR','CLIENT_VIEW'],
   periods:    ['OWNER','ADMIN'],
   payroll:    ['OWNER','ADMIN','PAYROLL_CLERK'],
   w2:         ['OWNER','ADMIN','PAYROLL_CLERK'],
@@ -87,6 +88,7 @@ export default function LedgerProApp() {
     { id: 'ap',        label: 'AP Tracker',         icon: '◎' },
     { id: 'payments',  label: 'Payments',           icon: '✓' },
     { id: 'recon',     label: 'Bank Recon',         icon: '↔' },
+    { id: 'reports',   label: 'Reports',            icon: '▤' },
     { id: 'periods',   label: 'Period Locks',       icon: '🔒' },
     { id: 'payroll',   label: 'Payroll',            icon: '◷' },
     { id: 'w2',        label: 'W-2 / 1040-K',       icon: '◻' },
@@ -201,6 +203,7 @@ export default function LedgerProApp() {
                 {page === 'ap'        && <ApPage         showToast={showToast} />}
                 {page === 'payments'  && <PaymentsPage   showToast={showToast} />}
                 {page === 'recon'     && <ReconPage      showToast={showToast} />}
+                {page === 'reports'   && <ReportsPage    showToast={showToast} />}
                 {page === 'periods'   && <PeriodsPage    showToast={showToast} />}
                 {page === 'payroll'   && <PayrollPage    showToast={showToast} />}
                 {page === 'w2'        && <W2Page         showToast={showToast} />}
@@ -2240,6 +2243,754 @@ function PeriodsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => 
       </div>
     </div>
   )
+}
+
+// ─── Reports (QuickBooks-style) ───────────────────────────────────────────────
+
+interface ReportDef {
+  id: string                          // backend type param
+  name: string                        // shown in UI
+  description: string
+  category: 'overview' | 'expenses' | 'accountant' | 'banking'
+  needsRange: boolean                 // does it take a from/to date range?
+  needsAsOf: boolean                  // or a single "as of" date?
+}
+
+const REPORT_CATALOG: ReportDef[] = [
+  { id: 'pnl',                  name: 'Profit & Loss',              description: 'Revenue, expenses, and net income for the period.',                category: 'overview',   needsRange: true,  needsAsOf: false },
+  { id: 'pnl-comparison',       name: 'Profit & Loss Comparison',   description: 'Current period vs prior period and prior year.',                   category: 'overview',   needsRange: true,  needsAsOf: false },
+  { id: 'balance-sheet',        name: 'Balance Sheet',              description: 'Assets, liabilities, and equity as of a date.',                    category: 'overview',   needsRange: false, needsAsOf: true  },
+  { id: 'cash-flows',           name: 'Statement of Cash Flows',    description: 'Cash movement broken into operating, investing, and financing.',   category: 'overview',   needsRange: true,  needsAsOf: false },
+  { id: 'ap-aging',             name: 'A/P Aging Summary',          description: 'Open bills grouped by how far overdue they are.',                  category: 'expenses',   needsRange: false, needsAsOf: true  },
+  { id: 'ap-aging-detail',      name: 'A/P Aging Detail',           description: 'Every open bill listed, grouped by vendor.',                       category: 'expenses',   needsRange: false, needsAsOf: true  },
+  { id: 'expenses-by-vendor',   name: 'Expenses by Vendor',         description: 'Total billed by each vendor over the period.',                     category: 'expenses',   needsRange: true,  needsAsOf: false },
+  { id: 'trial-balance',        name: 'Trial Balance',              description: 'Every account with its debit or credit balance — proves the books balance.', category: 'accountant', needsRange: true,  needsAsOf: false },
+  { id: 'general-ledger',       name: 'General Ledger',             description: 'Every posted transaction by account with running balance.',         category: 'accountant', needsRange: true,  needsAsOf: false },
+  { id: 'journal',              name: 'Journal Report',             description: 'Chronological list of every posted journal entry.',                category: 'accountant', needsRange: true,  needsAsOf: false },
+]
+
+const REPORT_CATEGORIES = [
+  { id: 'overview',   name: 'Business overview',     description: 'How your business is performing overall' },
+  { id: 'expenses',   name: 'What you owe',          description: 'Bills, vendor balances, and aging' },
+  { id: 'accountant', name: 'For my accountant',     description: 'Trial balance, general ledger, and the journal' },
+] as const
+
+// ─── Date-range presets, QB-style ──────────────────────────────────────────────
+type RangePresetId = 'today' | 'this-month' | 'last-month' | 'this-quarter' | 'last-quarter' | 'this-year' | 'last-year' | 'ytd' | 'custom'
+
+function presetRange(preset: RangePresetId, today: Date = new Date()): { from: string; to: string } {
+  const iso = (d: Date) => d.toISOString().slice(0, 10)
+  const y = today.getFullYear(), m = today.getMonth()
+  const startOfMonth = new Date(y, m, 1)
+  const endOfMonth   = new Date(y, m + 1, 0)
+  const q = Math.floor(m / 3)
+  const startOfQuarter = new Date(y, q * 3, 1)
+  const endOfQuarter   = new Date(y, q * 3 + 3, 0)
+  const startOfYear = new Date(y, 0, 1)
+  const endOfYear   = new Date(y, 11, 31)
+  switch (preset) {
+    case 'today':         return { from: iso(today), to: iso(today) }
+    case 'this-month':    return { from: iso(startOfMonth), to: iso(endOfMonth) }
+    case 'last-month': {
+      const f = new Date(y, m - 1, 1), t = new Date(y, m, 0)
+      return { from: iso(f), to: iso(t) }
+    }
+    case 'this-quarter':  return { from: iso(startOfQuarter), to: iso(endOfQuarter) }
+    case 'last-quarter': {
+      const f = new Date(y, (q - 1) * 3, 1), t = new Date(y, q * 3, 0)
+      return { from: iso(f), to: iso(t) }
+    }
+    case 'this-year':     return { from: iso(startOfYear), to: iso(endOfYear) }
+    case 'last-year':     return { from: iso(new Date(y - 1, 0, 1)), to: iso(new Date(y - 1, 11, 31)) }
+    case 'ytd':           return { from: iso(startOfYear), to: iso(today) }
+    default:              return { from: iso(startOfYear), to: iso(today) }
+  }
+}
+
+function ReportsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => void }) {
+  const [activeReport, setActiveReport] = useState<string | null>(null)
+  const def = activeReport ? REPORT_CATALOG.find(r => r.id === activeReport) ?? null : null
+
+  if (def) {
+    return <ReportViewer def={def} showToast={showToast} onBack={() => setActiveReport(null)} />
+  }
+  return <ReportsLanding onPick={setActiveReport} />
+}
+
+// ─── Landing: catalog of reports grouped by category ──────────────────────────
+function ReportsLanding({ onPick }: { onPick: (id: string) => void }) {
+  const [search, setSearch] = useState('')
+  const filtered = (cat: string) =>
+    REPORT_CATALOG.filter(r => r.category === cat)
+      .filter(r => !search || (r.name + ' ' + r.description).toLowerCase().includes(search.toLowerCase()))
+
+  return (
+    <div>
+      <div style={S.pageActions}>
+        <input
+          style={{ ...S.input, maxWidth: 380, marginBottom: 0 }}
+          placeholder="Find a report by name…"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+        />
+        <div style={{ fontSize: 12, color: '#64748b' }}>{REPORT_CATALOG.length} reports available</div>
+      </div>
+
+      {REPORT_CATEGORIES.map(cat => {
+        const reports = filtered(cat.id)
+        if (reports.length === 0 && search) return null
+        return (
+          <div key={cat.id} style={{ marginBottom: 24 }}>
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 16, fontWeight: 600 }}>{cat.name}</div>
+              <div style={{ fontSize: 12, color: '#94a3b8' }}>{cat.description}</div>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 10 }}>
+              {reports.map(r => (
+                <button
+                  key={r.id}
+                  onClick={() => onPick(r.id)}
+                  style={{
+                    textAlign: 'left', background: '#fff', border: '1px solid #e2e8f0',
+                    borderRadius: 10, padding: 16, cursor: 'pointer', display: 'flex',
+                    flexDirection: 'column', gap: 6, transition: 'all .12s',
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.borderColor = '#0891b2'; e.currentTarget.style.boxShadow = '0 2px 8px rgba(8,145,178,0.08)' }}
+                  onMouseLeave={e => { e.currentTarget.style.borderColor = '#e2e8f0'; e.currentTarget.style.boxShadow = 'none' }}
+                >
+                  <div style={{ fontSize: 14, fontWeight: 600, color: '#0f172a' }}>{r.name}</div>
+                  <div style={{ fontSize: 12, color: '#64748b', lineHeight: 1.4 }}>{r.description}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+// ─── Viewer: customization bar + the report itself ────────────────────────────
+function ReportViewer({ def, showToast, onBack }: { def: ReportDef; showToast: (m: string, t?: 'ok'|'err') => void; onBack: () => void }) {
+  const { currentEntity } = useApp()
+  const initial = presetRange('this-year')
+  const [preset, setPreset] = useState<RangePresetId>('this-year')
+  const [from, setFrom] = useState(initial.from)
+  const [to, setTo] = useState(initial.to)
+  const [asOf, setAsOf] = useState(new Date().toISOString().slice(0, 10))
+  const [data, setData] = useState<unknown>(null)
+  const [loading, setLoading] = useState(false)
+
+  const setPresetAndDates = (p: RangePresetId) => {
+    setPreset(p)
+    if (p !== 'custom') {
+      const r = presetRange(p)
+      setFrom(r.from); setTo(r.to); setAsOf(r.to)
+    }
+  }
+
+  const load = useCallback(async () => {
+    if (!currentEntity) return
+    setLoading(true)
+    try {
+      const params = new URLSearchParams({ entityId: currentEntity.id, type: def.id })
+      if (def.needsRange) { params.set('from', from); params.set('to', to) }
+      if (def.needsAsOf)  { params.set('asOf', asOf) }
+      const res = await fetch(`/api/reports?${params}`)
+      if (!res.ok) {
+        const e = await res.json(); showToast(e.error ?? 'Failed to load report', 'err'); return
+      }
+      setData(await res.json())
+    } finally { setLoading(false) }
+  }, [currentEntity, def, from, to, asOf, showToast])
+
+  useEffect(() => { load() }, [load])
+
+  const exportCsv = () => {
+    if (!data) return
+    const rows = reportToCsvRows(def, data)
+    if (!rows.length) { showToast('Nothing to export yet', 'err'); return }
+    const csv = rows.map(r => r.map(cell => {
+      const s = String(cell ?? '')
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+    }).join(',')).join('\n')
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${def.id}-${(def.needsAsOf ? asOf : `${from}_to_${to}`)}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  return (
+    <div>
+      <div style={S.pageActions}>
+        <button style={S.btn} onClick={onBack}>← All reports</button>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <button style={S.btn} onClick={load} disabled={loading}>{loading ? 'Loading…' : 'Refresh'}</button>
+          <button style={{ ...S.btn, ...S.btnPrimary }} onClick={exportCsv} disabled={!data}>Export CSV</button>
+          <button style={S.btn} onClick={() => window.print()}>Print</button>
+        </div>
+      </div>
+
+      {/* Customization bar */}
+      <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, padding: 14, marginBottom: 16 }}>
+        <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+          {def.needsRange && (
+            <>
+              <div>
+                <label style={S.label}>Period</label>
+                <select style={{ ...S.select, minWidth: 160 }} value={preset} onChange={e => setPresetAndDates(e.target.value as RangePresetId)}>
+                  <option value="today">Today</option>
+                  <option value="this-month">This month</option>
+                  <option value="last-month">Last month</option>
+                  <option value="this-quarter">This quarter</option>
+                  <option value="last-quarter">Last quarter</option>
+                  <option value="ytd">Year to date</option>
+                  <option value="this-year">This year</option>
+                  <option value="last-year">Last year</option>
+                  <option value="custom">Custom…</option>
+                </select>
+              </div>
+              <div>
+                <label style={S.label}>From</label>
+                <input style={S.input} type="date" value={from} onChange={e => { setFrom(e.target.value); setPreset('custom') }} />
+              </div>
+              <div>
+                <label style={S.label}>To</label>
+                <input style={S.input} type="date" value={to} onChange={e => { setTo(e.target.value); setPreset('custom') }} />
+              </div>
+            </>
+          )}
+          {def.needsAsOf && (
+            <div>
+              <label style={S.label}>As of</label>
+              <input style={S.input} type="date" value={asOf} onChange={e => setAsOf(e.target.value)} />
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Report body */}
+      <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, padding: 28 }}>
+        <div style={{ textAlign: 'center', marginBottom: 6 }}>
+          <div style={{ fontSize: 12, color: '#94a3b8' }}>{currentEntity?.name}</div>
+          <div style={{ fontSize: 22, fontWeight: 700, marginTop: 2 }}>{def.name}</div>
+          <div style={{ fontSize: 12, color: '#64748b', marginTop: 4 }}>
+            {def.needsRange && `${fmtDate(from)} — ${fmtDate(to)}`}
+            {def.needsAsOf && `As of ${fmtDate(asOf)}`}
+          </div>
+        </div>
+
+        {loading && <div style={{ textAlign: 'center', padding: 60, color: '#94a3b8' }}>Generating report…</div>}
+        {!loading && data && <ReportBody def={def} data={data} />}
+        {!loading && !data && <div style={{ textAlign: 'center', padding: 60, color: '#94a3b8' }}>No data</div>}
+      </div>
+    </div>
+  )
+}
+
+// ─── Renderers per report type ────────────────────────────────────────────────
+function ReportBody({ def, data }: { def: ReportDef; data: unknown }) {
+  switch (def.id) {
+    case 'pnl':                return <PnlReport data={data as PnlData} />
+    case 'pnl-comparison':     return <PnlComparisonReport data={data as PnlComparisonData} />
+    case 'balance-sheet':      return <BalanceSheetReport data={data as BsData} />
+    case 'cash-flows':         return <CashFlowsReport data={data as CashFlowsData} />
+    case 'trial-balance':      return <TrialBalanceReport data={data as TrialBalanceData} />
+    case 'general-ledger':     return <GeneralLedgerReport data={data as GlData} />
+    case 'journal':            return <JournalReportView data={data as JournalData} />
+    case 'ap-aging':           return <ApAgingReport data={data as ApAgingData} />
+    case 'ap-aging-detail':    return <ApAgingDetailReport data={data as ApAgingDetailData} />
+    case 'expenses-by-vendor': return <ExpensesByVendorReport data={data as ExpensesByVendorData} />
+    default:                   return <pre style={{ fontSize: 11 }}>{JSON.stringify(data, null, 2)}</pre>
+  }
+}
+
+// ─── Data shapes ──────────────────────────────────────────────────────────────
+interface AmtRow { code: string; name: string; amount: number }
+interface PnlData {
+  revenue: AmtRow[]; cogs: AmtRow[]; expenses: AmtRow[]
+  totalRevenue: number; totalCogs: number; grossProfit: number; grossMargin: number
+  totalExpenses: number; netIncome: number; netMargin: number
+}
+interface PnlComparisonData { current: PnlData; prior: PnlData; priorYear: PnlData }
+interface BsData {
+  assets: AmtRow[]; liabilities: AmtRow[]; equity: AmtRow[]
+  totalAssets: number; totalLiabilities: number; totalEquity: number
+  totalLiabilitiesAndEquity: number; balanced: boolean
+}
+interface CashFlowsData {
+  operating: { netIncome: number; adjustments: { code: string; name: string; amount: number; direction?: string }[]; total: number }
+  investing: { items: { code: string; name: string; amount: number }[]; total: number }
+  financing: { items: { code: string; name: string; amount: number }[]; total: number }
+  netCashChange: number; cashAtStart: number; cashAtEnd: number
+}
+interface TrialBalanceData {
+  rows: { code: string; name: string; type: string; debit: number; credit: number }[]
+  totalDebit: number; totalCredit: number; balanced: boolean
+}
+interface GlData {
+  accounts: {
+    account: { code: string; name: string; type: string }
+    opening: number; closing: number
+    entries: { date: string; ref: string; description: string | null; debit: number; credit: number; balance: number }[]
+  }[]
+}
+interface JournalData {
+  entries: {
+    date: string; ref: string; description: string | null; source: string | null
+    lines: { accountCode: string; accountName: string; description: string | null; debit: number; credit: number }[]
+    totalDebit: number; totalCredit: number
+  }[]
+  totalEntries: number; totalDebit: number; totalCredit: number
+}
+interface ApAgingData {
+  rows: { vendor: string; invoiceNo: string; dueDate: string; daysOverdue: number; balance: number; bucket: string }[]
+  buckets: { current: number; d1_30: number; d31_60: number; d61_90: number; d90plus: number }
+  total: number
+}
+interface ApAgingDetailData {
+  vendors: {
+    vendor: string
+    invoices: { invoiceNo: string; invoiceDate: string; dueDate: string; daysOverdue: number; amount: number; amountPaid: number; balance: number; bucket: string; status: string }[]
+    total: number
+  }[]
+  grandTotal: number
+}
+interface ExpensesByVendorData {
+  rows: { vendor: string; totalAmount: number; invoiceCount: number }[]
+  grandTotal: number; totalInvoices: number
+}
+
+// ─── Report renderers ─────────────────────────────────────────────────────────
+const reportTableHeader = { background: '#f8fafc', fontWeight: 600, fontSize: 11, color: '#475569', textTransform: 'uppercase' as const, letterSpacing: 0.06, padding: '8px 12px', borderBottom: '1px solid #e2e8f0', textAlign: 'left' as const }
+const reportTableCell   = { padding: '6px 12px', fontSize: 13, borderBottom: '1px solid #f1f5f9' }
+const reportSectionRow  = { padding: '12px 12px 6px', fontSize: 12, fontWeight: 600, color: '#0f172a', textTransform: 'uppercase' as const, letterSpacing: 0.06 }
+const reportSubtotalRow = { padding: '8px 12px', fontSize: 13, fontWeight: 600, borderTop: '1px solid #e2e8f0', background: '#f8fafc' }
+const reportGrandTotal  = { padding: '12px', fontSize: 14, fontWeight: 700, borderTop: '2px solid #0f172a', background: '#f8fafc' }
+
+function moneyCell(n: number, opts: { bold?: boolean; negative?: boolean } = {}) {
+  const negative = opts.negative ?? n < 0
+  return (
+    <span style={{ fontVariantNumeric: 'tabular-nums', color: negative ? '#dc2626' : 'inherit', fontWeight: opts.bold ? 600 : 'inherit' }}>
+      {n < 0 ? '(' : ''}${fmt(Math.abs(n))}{n < 0 ? ')' : ''}
+    </span>
+  )
+}
+
+function PnlReport({ data }: { data: PnlData }) {
+  const Row = ({ row }: { row: AmtRow }) => (
+    <tr><td style={{ ...reportTableCell, paddingLeft: 28 }}>{row.code} — {row.name}</td><td style={{ ...reportTableCell, textAlign: 'right' }}>{moneyCell(row.amount)}</td></tr>
+  )
+  return (
+    <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+      <tbody>
+        <tr><td style={reportSectionRow} colSpan={2}>Income</td></tr>
+        {data.revenue.length === 0 && <tr><td colSpan={2} style={{ ...reportTableCell, paddingLeft: 28, color: '#94a3b8' }}>No revenue in period</td></tr>}
+        {data.revenue.map(r => <Row key={r.code} row={r} />)}
+        <tr><td style={reportSubtotalRow}>Total Income</td><td style={{ ...reportSubtotalRow, textAlign: 'right' }}>{moneyCell(data.totalRevenue, { bold: true })}</td></tr>
+
+        {data.cogs.length > 0 && <>
+          <tr><td style={reportSectionRow} colSpan={2}>Cost of Goods Sold</td></tr>
+          {data.cogs.map(r => <Row key={r.code} row={r} />)}
+          <tr><td style={reportSubtotalRow}>Total COGS</td><td style={{ ...reportSubtotalRow, textAlign: 'right' }}>{moneyCell(data.totalCogs, { bold: true })}</td></tr>
+          <tr><td style={{ ...reportSubtotalRow, background: '#f0fdf4' }}>Gross Profit</td><td style={{ ...reportSubtotalRow, background: '#f0fdf4', textAlign: 'right' }}>{moneyCell(data.grossProfit, { bold: true })}</td></tr>
+        </>}
+
+        <tr><td style={reportSectionRow} colSpan={2}>Expenses</td></tr>
+        {data.expenses.length === 0 && <tr><td colSpan={2} style={{ ...reportTableCell, paddingLeft: 28, color: '#94a3b8' }}>No expenses in period</td></tr>}
+        {data.expenses.map(r => <Row key={r.code} row={r} />)}
+        <tr><td style={reportSubtotalRow}>Total Expenses</td><td style={{ ...reportSubtotalRow, textAlign: 'right' }}>{moneyCell(data.totalExpenses, { bold: true })}</td></tr>
+
+        <tr><td style={{ ...reportGrandTotal, background: data.netIncome >= 0 ? '#f0fdf4' : '#fef2f2' }}>Net Income</td><td style={{ ...reportGrandTotal, background: data.netIncome >= 0 ? '#f0fdf4' : '#fef2f2', textAlign: 'right' }}>{moneyCell(data.netIncome, { bold: true })}</td></tr>
+        {data.totalRevenue > 0 && <tr><td style={{ ...reportTableCell, color: '#64748b', fontSize: 11 }}>Net margin</td><td style={{ ...reportTableCell, color: '#64748b', fontSize: 11, textAlign: 'right' }}>{(data.netMargin * 100).toFixed(1)}%</td></tr>}
+      </tbody>
+    </table>
+  )
+}
+
+function PnlComparisonReport({ data }: { data: PnlComparisonData }) {
+  const renderRow = (label: string, c: number, p: number, py: number, opts: { bold?: boolean; emphasize?: boolean } = {}) => {
+    const change = c - p
+    const pctChange = p !== 0 ? (change / Math.abs(p)) * 100 : null
+    const style = opts.emphasize ? reportGrandTotal : opts.bold ? reportSubtotalRow : { ...reportTableCell, paddingLeft: 28 }
+    const right = { ...style, textAlign: 'right' as const }
+    return (
+      <tr>
+        <td style={style}>{label}</td>
+        <td style={right}>{moneyCell(c, { bold: opts.bold })}</td>
+        <td style={right}>{moneyCell(p, { bold: opts.bold })}</td>
+        <td style={right}><span style={{ color: change >= 0 ? '#16a34a' : '#dc2626', fontVariantNumeric: 'tabular-nums', fontWeight: opts.bold ? 600 : 'inherit' }}>{change >= 0 ? '+' : ''}{fmt(change)}{pctChange !== null && ` (${pctChange >= 0 ? '+' : ''}${pctChange.toFixed(1)}%)`}</span></td>
+        <td style={right}>{moneyCell(py, { bold: opts.bold })}</td>
+      </tr>
+    )
+  }
+  return (
+    <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+      <thead>
+        <tr>
+          <th style={reportTableHeader}></th>
+          <th style={{ ...reportTableHeader, textAlign: 'right' }}>Current</th>
+          <th style={{ ...reportTableHeader, textAlign: 'right' }}>Prior Period</th>
+          <th style={{ ...reportTableHeader, textAlign: 'right' }}>Change</th>
+          <th style={{ ...reportTableHeader, textAlign: 'right' }}>Prior Year</th>
+        </tr>
+      </thead>
+      <tbody>
+        {renderRow('Total Income', data.current.totalRevenue, data.prior.totalRevenue, data.priorYear.totalRevenue, { bold: true })}
+        {data.current.totalCogs > 0 && renderRow('Total COGS', data.current.totalCogs, data.prior.totalCogs, data.priorYear.totalCogs, { bold: true })}
+        {data.current.totalCogs > 0 && renderRow('Gross Profit', data.current.grossProfit, data.prior.grossProfit, data.priorYear.grossProfit, { bold: true })}
+        {renderRow('Total Expenses', data.current.totalExpenses, data.prior.totalExpenses, data.priorYear.totalExpenses, { bold: true })}
+        {renderRow('Net Income', data.current.netIncome, data.prior.netIncome, data.priorYear.netIncome, { emphasize: true })}
+      </tbody>
+    </table>
+  )
+}
+
+function BalanceSheetReport({ data }: { data: BsData }) {
+  const section = (title: string, rows: AmtRow[], total: number, totalLabel: string) => (
+    <>
+      <tr><td style={reportSectionRow} colSpan={2}>{title}</td></tr>
+      {rows.length === 0 && <tr><td colSpan={2} style={{ ...reportTableCell, paddingLeft: 28, color: '#94a3b8' }}>None</td></tr>}
+      {rows.map(r => <tr key={r.code}><td style={{ ...reportTableCell, paddingLeft: 28 }}>{r.code} — {r.name}</td><td style={{ ...reportTableCell, textAlign: 'right' }}>{moneyCell(r.amount)}</td></tr>)}
+      <tr><td style={reportSubtotalRow}>{totalLabel}</td><td style={{ ...reportSubtotalRow, textAlign: 'right' }}>{moneyCell(total, { bold: true })}</td></tr>
+    </>
+  )
+  return (
+    <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+      <tbody>
+        {section('Assets',      data.assets,      data.totalAssets,      'Total Assets')}
+        {section('Liabilities', data.liabilities, data.totalLiabilities, 'Total Liabilities')}
+        {section('Equity',      data.equity,      data.totalEquity,      'Total Equity')}
+        <tr><td style={reportGrandTotal}>Total Liabilities and Equity</td><td style={{ ...reportGrandTotal, textAlign: 'right' }}>{moneyCell(data.totalLiabilitiesAndEquity, { bold: true })}</td></tr>
+        {!data.balanced && <tr><td colSpan={2} style={{ padding: 12, color: '#dc2626', fontSize: 12, textAlign: 'center', background: '#fef2f2' }}>⚠ Out of balance by ${fmt(Math.abs(data.totalAssets - data.totalLiabilitiesAndEquity))}</td></tr>}
+      </tbody>
+    </table>
+  )
+}
+
+function CashFlowsReport({ data }: { data: CashFlowsData }) {
+  return (
+    <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+      <tbody>
+        <tr><td style={reportSectionRow} colSpan={2}>Cash from Operating Activities</td></tr>
+        <tr><td style={{ ...reportTableCell, paddingLeft: 28 }}>Net Income</td><td style={{ ...reportTableCell, textAlign: 'right' }}>{moneyCell(data.operating.netIncome)}</td></tr>
+        {data.operating.adjustments.length > 0 && <tr><td colSpan={2} style={{ ...reportTableCell, paddingLeft: 28, color: '#64748b', fontSize: 11 }}>Adjustments for changes in working capital:</td></tr>}
+        {data.operating.adjustments.map(a => <tr key={a.code}><td style={{ ...reportTableCell, paddingLeft: 44 }}>{a.code} — {a.name}</td><td style={{ ...reportTableCell, textAlign: 'right' }}>{moneyCell(a.amount)}</td></tr>)}
+        <tr><td style={reportSubtotalRow}>Net Cash from Operating Activities</td><td style={{ ...reportSubtotalRow, textAlign: 'right' }}>{moneyCell(data.operating.total, { bold: true })}</td></tr>
+
+        <tr><td style={reportSectionRow} colSpan={2}>Cash from Investing Activities</td></tr>
+        {data.investing.items.length === 0 && <tr><td colSpan={2} style={{ ...reportTableCell, paddingLeft: 28, color: '#94a3b8' }}>No investing activity</td></tr>}
+        {data.investing.items.map(a => <tr key={a.code}><td style={{ ...reportTableCell, paddingLeft: 28 }}>{a.code} — {a.name}</td><td style={{ ...reportTableCell, textAlign: 'right' }}>{moneyCell(a.amount)}</td></tr>)}
+        <tr><td style={reportSubtotalRow}>Net Cash from Investing</td><td style={{ ...reportSubtotalRow, textAlign: 'right' }}>{moneyCell(data.investing.total, { bold: true })}</td></tr>
+
+        <tr><td style={reportSectionRow} colSpan={2}>Cash from Financing Activities</td></tr>
+        {data.financing.items.length === 0 && <tr><td colSpan={2} style={{ ...reportTableCell, paddingLeft: 28, color: '#94a3b8' }}>No financing activity</td></tr>}
+        {data.financing.items.map(a => <tr key={a.code}><td style={{ ...reportTableCell, paddingLeft: 28 }}>{a.code} — {a.name}</td><td style={{ ...reportTableCell, textAlign: 'right' }}>{moneyCell(a.amount)}</td></tr>)}
+        <tr><td style={reportSubtotalRow}>Net Cash from Financing</td><td style={{ ...reportSubtotalRow, textAlign: 'right' }}>{moneyCell(data.financing.total, { bold: true })}</td></tr>
+
+        <tr><td style={reportGrandTotal}>Net Change in Cash</td><td style={{ ...reportGrandTotal, textAlign: 'right' }}>{moneyCell(data.netCashChange, { bold: true })}</td></tr>
+        <tr><td style={reportTableCell}>Cash at beginning of period</td><td style={{ ...reportTableCell, textAlign: 'right' }}>{moneyCell(data.cashAtStart)}</td></tr>
+        <tr><td style={{ ...reportTableCell, fontWeight: 600 }}>Cash at end of period</td><td style={{ ...reportTableCell, textAlign: 'right', fontWeight: 600 }}>{moneyCell(data.cashAtEnd, { bold: true })}</td></tr>
+      </tbody>
+    </table>
+  )
+}
+
+function TrialBalanceReport({ data }: { data: TrialBalanceData }) {
+  return (
+    <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+      <thead><tr>
+        <th style={reportTableHeader}>Account</th>
+        <th style={{ ...reportTableHeader, textAlign: 'right' }}>Debit</th>
+        <th style={{ ...reportTableHeader, textAlign: 'right' }}>Credit</th>
+      </tr></thead>
+      <tbody>
+        {data.rows.map(r => (
+          <tr key={r.code}>
+            <td style={reportTableCell}>{r.code} — {r.name}</td>
+            <td style={{ ...reportTableCell, textAlign: 'right' }}>{r.debit > 0 ? `$${fmt(r.debit)}` : ''}</td>
+            <td style={{ ...reportTableCell, textAlign: 'right' }}>{r.credit > 0 ? `$${fmt(r.credit)}` : ''}</td>
+          </tr>
+        ))}
+        <tr>
+          <td style={reportGrandTotal}>Total</td>
+          <td style={{ ...reportGrandTotal, textAlign: 'right' }}>${fmt(data.totalDebit)}</td>
+          <td style={{ ...reportGrandTotal, textAlign: 'right' }}>${fmt(data.totalCredit)}</td>
+        </tr>
+        {!data.balanced && <tr><td colSpan={3} style={{ padding: 12, color: '#dc2626', fontSize: 12, textAlign: 'center', background: '#fef2f2' }}>⚠ Trial balance does not tie — investigate before relying on this report</td></tr>}
+      </tbody>
+    </table>
+  )
+}
+
+function GeneralLedgerReport({ data }: { data: GlData }) {
+  if (data.accounts.length === 0) return <div style={{ textAlign: 'center', padding: 40, color: '#94a3b8' }}>No activity in this period</div>
+  return (
+    <div>
+      {data.accounts.map(a => (
+        <div key={a.account.code} style={{ marginBottom: 24 }}>
+          <div style={{ padding: '8px 12px', background: '#f1f5f9', borderRadius: 6, marginBottom: 6, fontWeight: 600, fontSize: 13 }}>
+            {a.account.code} — {a.account.name}
+            <span style={{ float: 'right', fontWeight: 400, color: '#64748b', fontSize: 12 }}>Opening: ${fmt(a.opening)} • Closing: ${fmt(a.closing)}</span>
+          </div>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead><tr>
+              <th style={reportTableHeader}>Date</th>
+              <th style={reportTableHeader}>Ref</th>
+              <th style={reportTableHeader}>Description</th>
+              <th style={{ ...reportTableHeader, textAlign: 'right' }}>Debit</th>
+              <th style={{ ...reportTableHeader, textAlign: 'right' }}>Credit</th>
+              <th style={{ ...reportTableHeader, textAlign: 'right' }}>Balance</th>
+            </tr></thead>
+            <tbody>
+              {a.entries.map((e, i) => (
+                <tr key={i}>
+                  <td style={reportTableCell}>{fmtDate(e.date)}</td>
+                  <td style={{ ...reportTableCell, fontFamily: 'monospace', fontSize: 11 }}>{e.ref}</td>
+                  <td style={{ ...reportTableCell, color: '#64748b' }}>{e.description}</td>
+                  <td style={{ ...reportTableCell, textAlign: 'right' }}>{e.debit > 0 ? `$${fmt(e.debit)}` : ''}</td>
+                  <td style={{ ...reportTableCell, textAlign: 'right' }}>{e.credit > 0 ? `$${fmt(e.credit)}` : ''}</td>
+                  <td style={{ ...reportTableCell, textAlign: 'right', fontWeight: 500 }}>${fmt(e.balance)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function JournalReportView({ data }: { data: JournalData }) {
+  if (data.entries.length === 0) return <div style={{ textAlign: 'center', padding: 40, color: '#94a3b8' }}>No posted entries in this period</div>
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 24, marginBottom: 16, fontSize: 13, color: '#475569' }}>
+        <div><strong>{data.totalEntries}</strong> entries</div>
+        <div>Total debits: <strong>${fmt(data.totalDebit)}</strong></div>
+        <div>Total credits: <strong>${fmt(data.totalCredit)}</strong></div>
+      </div>
+      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <thead><tr>
+          <th style={reportTableHeader}>Date / Ref</th>
+          <th style={reportTableHeader}>Account</th>
+          <th style={reportTableHeader}>Description</th>
+          <th style={{ ...reportTableHeader, textAlign: 'right' }}>Debit</th>
+          <th style={{ ...reportTableHeader, textAlign: 'right' }}>Credit</th>
+        </tr></thead>
+        <tbody>
+          {data.entries.map((entry, i) => (
+            <Fragment key={i}>
+              <tr>
+                <td style={{ ...reportTableCell, fontWeight: 600, verticalAlign: 'top' }} rowSpan={entry.lines.length + 1}>
+                  <div>{fmtDate(entry.date)}</div>
+                  <div style={{ fontFamily: 'monospace', fontSize: 11, color: '#64748b', fontWeight: 400 }}>{entry.ref}</div>
+                  {entry.description && <div style={{ fontSize: 11, color: '#64748b', fontWeight: 400, marginTop: 4 }}>{entry.description}</div>}
+                </td>
+              </tr>
+              {entry.lines.map((l, j) => (
+                <tr key={j}>
+                  <td style={reportTableCell}>{l.accountCode} — {l.accountName}</td>
+                  <td style={{ ...reportTableCell, color: '#64748b', fontSize: 12 }}>{l.description ?? ''}</td>
+                  <td style={{ ...reportTableCell, textAlign: 'right' }}>{l.debit > 0 ? `$${fmt(l.debit)}` : ''}</td>
+                  <td style={{ ...reportTableCell, textAlign: 'right' }}>{l.credit > 0 ? `$${fmt(l.credit)}` : ''}</td>
+                </tr>
+              ))}
+            </Fragment>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function ApAgingReport({ data }: { data: ApAgingData }) {
+  return (
+    <div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 8, marginBottom: 20 }}>
+        {[
+          { label: 'Current', value: data.buckets.current, color: '#16a34a' },
+          { label: '1-30 days', value: data.buckets.d1_30, color: '#eab308' },
+          { label: '31-60 days', value: data.buckets.d31_60, color: '#f97316' },
+          { label: '61-90 days', value: data.buckets.d61_90, color: '#dc2626' },
+          { label: '>90 days', value: data.buckets.d90plus, color: '#991b1b' },
+          { label: 'Total', value: data.total, color: '#0f172a' },
+        ].map(b => (
+          <div key={b.label} style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, padding: 12 }}>
+            <div style={{ fontSize: 10, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.06, marginBottom: 4 }}>{b.label}</div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: b.color }}>${fmt(b.value)}</div>
+          </div>
+        ))}
+      </div>
+      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <thead><tr>
+          <th style={reportTableHeader}>Vendor</th>
+          <th style={reportTableHeader}>Invoice</th>
+          <th style={reportTableHeader}>Due Date</th>
+          <th style={{ ...reportTableHeader, textAlign: 'right' }}>Days Overdue</th>
+          <th style={{ ...reportTableHeader, textAlign: 'right' }}>Balance</th>
+        </tr></thead>
+        <tbody>
+          {data.rows.length === 0 && <tr><td colSpan={5} style={{ ...reportTableCell, textAlign: 'center', color: '#94a3b8', padding: 24 }}>No open bills</td></tr>}
+          {data.rows.map((r, i) => (
+            <tr key={i}>
+              <td style={reportTableCell}>{r.vendor}</td>
+              <td style={{ ...reportTableCell, fontFamily: 'monospace', fontSize: 11 }}>{r.invoiceNo}</td>
+              <td style={reportTableCell}>{fmtDate(r.dueDate)}</td>
+              <td style={{ ...reportTableCell, textAlign: 'right', color: r.daysOverdue > 0 ? '#dc2626' : '#16a34a' }}>{r.daysOverdue > 0 ? r.daysOverdue : 'Current'}</td>
+              <td style={{ ...reportTableCell, textAlign: 'right', fontWeight: 500 }}>${fmt(r.balance)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function ApAgingDetailReport({ data }: { data: ApAgingDetailData }) {
+  if (data.vendors.length === 0) return <div style={{ textAlign: 'center', padding: 40, color: '#94a3b8' }}>No open bills</div>
+  return (
+    <div>
+      {data.vendors.map(v => (
+        <div key={v.vendor} style={{ marginBottom: 20 }}>
+          <div style={{ padding: '8px 12px', background: '#f1f5f9', borderRadius: 6, marginBottom: 6, fontWeight: 600, fontSize: 13 }}>
+            {v.vendor}
+            <span style={{ float: 'right', fontWeight: 600 }}>${fmt(v.total)}</span>
+          </div>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead><tr>
+              <th style={reportTableHeader}>Invoice</th>
+              <th style={reportTableHeader}>Invoice Date</th>
+              <th style={reportTableHeader}>Due Date</th>
+              <th style={{ ...reportTableHeader, textAlign: 'right' }}>Original</th>
+              <th style={{ ...reportTableHeader, textAlign: 'right' }}>Paid</th>
+              <th style={{ ...reportTableHeader, textAlign: 'right' }}>Days OD</th>
+              <th style={{ ...reportTableHeader, textAlign: 'right' }}>Balance</th>
+            </tr></thead>
+            <tbody>
+              {v.invoices.map(inv => (
+                <tr key={inv.invoiceNo}>
+                  <td style={{ ...reportTableCell, fontFamily: 'monospace', fontSize: 11 }}>{inv.invoiceNo}</td>
+                  <td style={reportTableCell}>{fmtDate(inv.invoiceDate)}</td>
+                  <td style={reportTableCell}>{fmtDate(inv.dueDate)}</td>
+                  <td style={{ ...reportTableCell, textAlign: 'right' }}>${fmt(inv.amount)}</td>
+                  <td style={{ ...reportTableCell, textAlign: 'right', color: '#16a34a' }}>${fmt(inv.amountPaid)}</td>
+                  <td style={{ ...reportTableCell, textAlign: 'right', color: inv.daysOverdue > 0 ? '#dc2626' : '#16a34a' }}>{inv.daysOverdue > 0 ? inv.daysOverdue : '—'}</td>
+                  <td style={{ ...reportTableCell, textAlign: 'right', fontWeight: 500 }}>${fmt(inv.balance)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ))}
+      <div style={{ ...reportGrandTotal, display: 'flex', justifyContent: 'space-between' }}>
+        <span>Grand Total</span>
+        <span>${fmt(data.grandTotal)}</span>
+      </div>
+    </div>
+  )
+}
+
+function ExpensesByVendorReport({ data }: { data: ExpensesByVendorData }) {
+  return (
+    <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+      <thead><tr>
+        <th style={reportTableHeader}>Vendor</th>
+        <th style={{ ...reportTableHeader, textAlign: 'right' }}>Invoices</th>
+        <th style={{ ...reportTableHeader, textAlign: 'right' }}>Total</th>
+        <th style={{ ...reportTableHeader, textAlign: 'right' }}>% of Total</th>
+      </tr></thead>
+      <tbody>
+        {data.rows.length === 0 && <tr><td colSpan={4} style={{ ...reportTableCell, textAlign: 'center', color: '#94a3b8', padding: 24 }}>No expenses in this period</td></tr>}
+        {data.rows.map(r => (
+          <tr key={r.vendor}>
+            <td style={reportTableCell}>{r.vendor}</td>
+            <td style={{ ...reportTableCell, textAlign: 'right' }}>{r.invoiceCount}</td>
+            <td style={{ ...reportTableCell, textAlign: 'right' }}>${fmt(r.totalAmount)}</td>
+            <td style={{ ...reportTableCell, textAlign: 'right', color: '#64748b' }}>{data.grandTotal > 0 ? `${(r.totalAmount / data.grandTotal * 100).toFixed(1)}%` : '—'}</td>
+          </tr>
+        ))}
+        <tr>
+          <td style={reportGrandTotal}>Total</td>
+          <td style={{ ...reportGrandTotal, textAlign: 'right' }}>{data.totalInvoices}</td>
+          <td style={{ ...reportGrandTotal, textAlign: 'right' }}>${fmt(data.grandTotal)}</td>
+          <td style={{ ...reportGrandTotal, textAlign: 'right' }}>100%</td>
+        </tr>
+      </tbody>
+    </table>
+  )
+}
+
+// ─── CSV export per report ────────────────────────────────────────────────────
+function reportToCsvRows(def: ReportDef, data: unknown): (string | number)[][] {
+  if (!data || typeof data !== 'object') return []
+  const d = data as Record<string, unknown>
+  switch (def.id) {
+    case 'pnl': {
+      const p = d as unknown as PnlData
+      const out: (string | number)[][] = [['Section','Code','Name','Amount']]
+      p.revenue.forEach(r => out.push(['Revenue', r.code, r.name, r.amount]))
+      out.push(['','','Total Revenue', p.totalRevenue])
+      p.cogs.forEach(r => out.push(['COGS', r.code, r.name, r.amount]))
+      if (p.cogs.length) out.push(['','','Gross Profit', p.grossProfit])
+      p.expenses.forEach(r => out.push(['Expense', r.code, r.name, r.amount]))
+      out.push(['','','Total Expenses', p.totalExpenses])
+      out.push(['','','Net Income', p.netIncome])
+      return out
+    }
+    case 'balance-sheet': {
+      const b = d as unknown as BsData
+      const out: (string | number)[][] = [['Section','Code','Name','Amount']]
+      b.assets.forEach(r => out.push(['Assets', r.code, r.name, r.amount]))
+      out.push(['','','Total Assets', b.totalAssets])
+      b.liabilities.forEach(r => out.push(['Liabilities', r.code, r.name, r.amount]))
+      b.equity.forEach(r => out.push(['Equity', r.code, r.name, r.amount]))
+      out.push(['','','Total Liabilities + Equity', b.totalLiabilitiesAndEquity])
+      return out
+    }
+    case 'trial-balance': {
+      const t = d as unknown as TrialBalanceData
+      const out: (string | number)[][] = [['Code','Name','Type','Debit','Credit']]
+      t.rows.forEach(r => out.push([r.code, r.name, r.type, r.debit, r.credit]))
+      out.push(['','','Total', t.totalDebit, t.totalCredit])
+      return out
+    }
+    case 'journal': {
+      const j = d as unknown as JournalData
+      const out: (string | number)[][] = [['Date','Ref','Description','Account','Line Description','Debit','Credit']]
+      j.entries.forEach(e => e.lines.forEach(l =>
+        out.push([new Date(e.date).toISOString().slice(0,10), e.ref, e.description ?? '', `${l.accountCode} ${l.accountName}`, l.description ?? '', l.debit, l.credit])
+      ))
+      return out
+    }
+    case 'ap-aging': {
+      const a = d as unknown as ApAgingData
+      const out: (string | number)[][] = [['Vendor','Invoice','Due Date','Days Overdue','Bucket','Balance']]
+      a.rows.forEach(r => out.push([r.vendor, r.invoiceNo, new Date(r.dueDate).toISOString().slice(0,10), r.daysOverdue, r.bucket, r.balance]))
+      return out
+    }
+    case 'ap-aging-detail': {
+      const a = d as unknown as ApAgingDetailData
+      const out: (string | number)[][] = [['Vendor','Invoice','Invoice Date','Due Date','Days Overdue','Original','Paid','Balance']]
+      a.vendors.forEach(v => v.invoices.forEach(i =>
+        out.push([v.vendor, i.invoiceNo, new Date(i.invoiceDate).toISOString().slice(0,10), new Date(i.dueDate).toISOString().slice(0,10), i.daysOverdue, i.amount, i.amountPaid, i.balance])
+      ))
+      return out
+    }
+    case 'expenses-by-vendor': {
+      const e = d as unknown as ExpensesByVendorData
+      const out: (string | number)[][] = [['Vendor','Invoices','Total']]
+      e.rows.forEach(r => out.push([r.vendor, r.invoiceCount, r.totalAmount]))
+      out.push(['','Total', e.grandTotal])
+      return out
+    }
+    default:
+      // Generic fallback: dump the JSON shape one key per row.
+      return [['key','value'], ...Object.entries(d).map(([k, v]) => [k, typeof v === 'object' ? JSON.stringify(v) : String(v)])]
+  }
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
