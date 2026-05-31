@@ -1,30 +1,51 @@
-# LedgerPro UI update — 2FA settings + Period locks
+# LedgerPro QR-code update for 2FA setup
 
-Extract at the root of your `ledgerpro` repo (the folder containing
-`package.json` and `prisma/`). Two files:
+Adds a "Scan QR code" button to the 2FA setup flow that opens a popup with a
+scannable QR rendered locally in the browser (no third-party services — the
+secret never leaves your app).
 
-- `src/app/page.tsx` — replaces existing. Adds:
-  - 2FA panel in Settings (enable / verify / show backup codes / disable / regenerate)
-  - Login screen 2FA challenge step (asks for a code after password when 2FA is on)
-  - New **Period Locks** page (lock/release months for OWNER/ADMIN)
-- `docs/soft-delete-audit.md` — written audit, no code changes. Recommends
-  defensive triggers + a soft-delete on `LegalEntity` if you take it forward.
+## What's in this zip
 
-## Deploy steps
+- `src/app/page.tsx` — replaces existing. Adds the QR modal to TwoFactorPanel.
+- `package.json` — replaces existing. Adds `qrcode` runtime dep and `@types/qrcode`.
 
-1. Extract over the repo (overwrite `page.tsx`, add the new doc)
-2. Commit and push:
-   ```
-   git add -A
-   git commit -m "2FA settings UI + Period Locks UI + soft-delete audit"
-   git push
-   ```
-3. Watch Railway logs — no migrations, just a Next.js rebuild.
+## ⚠ Important: update the lock file before pushing
+
+Because `package.json` changed, `package-lock.json` must be regenerated or
+Railway's `npm ci` will fail (same as last time).
+
+In `C:\ledgerpro`, after extracting this zip:
+
+```
+npm install
+```
+
+Wait for it to finish (15-30 seconds). It updates `package-lock.json`.
+
+Then commit and push:
+
+```
+git add -A
+git commit -m "Add QR code modal to 2FA setup"
+git push
+```
 
 ## What you should see after deploy
 
-- Settings page now has a "Two-factor authentication" card below entity settings
-- New "Period Locks" item in the sidebar (only visible to OWNER/ADMIN)
-- Logging in as a 2FA-enabled user prompts for the 6-digit code
+1. Go to **Settings** → click **Enable 2FA**
+2. The setup card now has a big "📱 Scan QR code" button at the top
+3. Click it — a popup appears with the QR code
+4. Open Google Authenticator on your phone → tap **+** → tap **Scan a QR code**
+5. Point your phone's camera at the QR on screen — it scans and adds the account
+6. Close the popup, enter the 6-digit code your authenticator shows
+7. You're 2FA-enabled
 
-No new environment variables. No new dependencies. No database changes.
+The "Open on this device" link still works (taps open the authenticator app on
+mobile), and there's still a collapsible "Can't scan? Show secret to enter
+manually" section as fallback.
+
+## How it works under the hood
+
+The QR is generated locally using the `qrcode` library, lazy-loaded on first
+button click so it doesn't bloat the main bundle. The otpauth:// URI never
+touches any external server. The QR renders as inline SVG, sharp at any zoom.

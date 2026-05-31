@@ -1313,6 +1313,34 @@ function TwoFactorPanel({ showToast }: { showToast: (m: string, t?: 'ok'|'err') 
   const [regenCode, setRegenCode] = useState('')
   const [shownCodes, setShownCodes] = useState<string[] | null>(null)
   const [busy, setBusy] = useState(false)
+  // QR modal state — opens a popup that renders the otpauth URI as a scannable QR.
+  const [qrOpen, setQrOpen] = useState(false)
+  const [qrSvg, setQrSvg] = useState<string | null>(null)
+  const [qrLoading, setQrLoading] = useState(false)
+
+  const openQr = async () => {
+    if (!setupData) return
+    setQrOpen(true)
+    if (qrSvg) return                                   // already generated this session
+    setQrLoading(true)
+    try {
+      // Lazy-load qrcode so it isn't shipped on every page load.
+      const QRCode = (await import('qrcode')).default
+      const svg = await QRCode.toString(setupData.otpauthUri, {
+        type: 'svg',
+        errorCorrectionLevel: 'M',
+        margin: 2,
+        width: 280,
+        color: { dark: '#0f172a', light: '#ffffff' },
+      })
+      setQrSvg(svg)
+    } catch {
+      showToast('Could not generate QR code', 'err')
+      setQrOpen(false)
+    } finally {
+      setQrLoading(false)
+    }
+  }
 
   const refreshStatus = useCallback(async () => {
     const res = await fetch('/api/auth/2fa/manage', {
@@ -1344,6 +1372,7 @@ function TwoFactorPanel({ showToast }: { showToast: (m: string, t?: 'ok'|'err') 
       const data = await res.json()
       if (!res.ok) return showToast(data.error ?? 'Verification failed', 'err')
       setShownCodes(data.backupCodes); setPhase('showing-codes'); setSetupData(null)
+      setQrSvg(null); setQrOpen(false)                    // discard QR — secret is now committed
       await refreshStatus()
       showToast('2FA enabled')
     } finally { setBusy(false) }
@@ -1427,19 +1456,29 @@ function TwoFactorPanel({ showToast }: { showToast: (m: string, t?: 'ok'|'err') 
       {phase === 'setup' && setupData && (
         <div>
           <div style={{ fontSize: 13, color: '#475569', lineHeight: 1.6, marginBottom: 12 }}>
-            <strong>Step 1:</strong> Open your authenticator app and add a new account.
+            <strong>Step 1:</strong> Open Google Authenticator (or Authy, 1Password, etc.) and add a new account.
           </div>
-          <div style={{ background: '#f8fafc', padding: 14, borderRadius: 8, border: '1px solid #e2e8f0', marginBottom: 14 }}>
-            <div style={{ fontSize: 11, fontWeight: 600, color: '#64748b', marginBottom: 6, textTransform: 'uppercase', letterSpacing: .06 }}>Account name</div>
-            <div style={{ fontFamily: 'monospace', fontSize: 13, marginBottom: 10 }}>{setupData.issuer}: {setupData.accountName}</div>
-            <div style={{ fontSize: 11, fontWeight: 600, color: '#64748b', marginBottom: 6, textTransform: 'uppercase', letterSpacing: .06 }}>Secret key (Time-based, 6 digits, 30 sec)</div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <code style={{ flex: 1, fontFamily: 'monospace', fontSize: 14, fontWeight: 600, letterSpacing: 1, wordBreak: 'break-all' }}>{setupData.secret}</code>
-              <button style={S.btn} onClick={() => copy(setupData.secret)}>Copy</button>
-            </div>
-            <div style={{ fontSize: 12, color: '#64748b', marginTop: 10 }}>
-              On mobile? <a href={setupData.otpauthUri} style={{ color: '#0891b2', fontWeight: 500 }}>Tap to add automatically</a> — your authenticator app will register the key.
-            </div>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
+            <button style={{ ...S.btn, ...S.btnPrimary }} onClick={openQr}>
+              📱 Scan QR code
+            </button>
+            <a href={setupData.otpauthUri} style={{ ...S.btn, textDecoration: 'none' }}>
+              Open on this device
+            </a>
+            <details style={{ flex: '1 1 100%', marginTop: 4 }}>
+              <summary style={{ cursor: 'pointer', fontSize: 12, color: '#64748b', padding: '6px 0' }}>
+                Can't scan? Show secret to enter manually
+              </summary>
+              <div style={{ background: '#f8fafc', padding: 14, borderRadius: 8, border: '1px solid #e2e8f0', marginTop: 8 }}>
+                <div style={{ fontSize: 11, fontWeight: 600, color: '#64748b', marginBottom: 6, textTransform: 'uppercase', letterSpacing: .06 }}>Account name</div>
+                <div style={{ fontFamily: 'monospace', fontSize: 13, marginBottom: 10 }}>{setupData.issuer}: {setupData.accountName}</div>
+                <div style={{ fontSize: 11, fontWeight: 600, color: '#64748b', marginBottom: 6, textTransform: 'uppercase', letterSpacing: .06 }}>Secret key (time-based, 6 digits, 30 sec)</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <code style={{ flex: 1, fontFamily: 'monospace', fontSize: 14, fontWeight: 600, letterSpacing: 1, wordBreak: 'break-all' }}>{setupData.secret}</code>
+                  <button style={S.btn} onClick={() => copy(setupData.secret)}>Copy</button>
+                </div>
+              </div>
+            </details>
           </div>
 
           <div style={{ fontSize: 13, color: '#475569', lineHeight: 1.6, marginBottom: 8 }}>
@@ -1454,7 +1493,53 @@ function TwoFactorPanel({ showToast }: { showToast: (m: string, t?: 'ok'|'err') 
           />
           <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
             <button style={{ ...S.btn, ...S.btnPrimary }} disabled={busy || verifyCode.length < 6} onClick={confirmSetup}>Verify & enable</button>
-            <button style={S.btn} onClick={() => { setPhase('idle'); setSetupData(null); setVerifyCode('') }}>Cancel</button>
+            <button style={S.btn} onClick={() => { setPhase('idle'); setSetupData(null); setVerifyCode(''); setQrSvg(null); setQrOpen(false) }}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {/* ── QR modal: dim backdrop, click outside to close ── */}
+      {qrOpen && (
+        <div
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(15, 23, 42, 0.6)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            zIndex: 1000, padding: 20,
+          }}
+          onClick={() => setQrOpen(false)}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              background: '#fff', borderRadius: 14, padding: 28, maxWidth: 360,
+              width: '100%', boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
+              textAlign: 'center',
+            }}
+          >
+            <div style={{ fontSize: 18, fontWeight: 600, marginBottom: 6 }}>Scan with your authenticator</div>
+            <div style={{ fontSize: 13, color: '#64748b', marginBottom: 18 }}>
+              In Google Authenticator: tap <strong>+</strong> → <strong>Scan a QR code</strong> → point your camera here.
+            </div>
+            <div
+              style={{
+                background: '#fff', padding: 12, borderRadius: 10, border: '1px solid #e2e8f0',
+                display: 'inline-block', marginBottom: 18,
+              }}
+            >
+              {qrLoading || !qrSvg ? (
+                <div style={{ width: 280, height: 280, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#94a3b8' }}>
+                  Generating QR…
+                </div>
+              ) : (
+                <div dangerouslySetInnerHTML={{ __html: qrSvg }} />
+              )}
+            </div>
+            <div style={{ fontSize: 12, color: '#64748b', marginBottom: 14, lineHeight: 1.5 }}>
+              After scanning, the app will show a 6-digit code. Close this and enter it below.
+            </div>
+            <button style={{ ...S.btn, ...S.btnPrimary, width: '100%', justifyContent: 'center' }} onClick={() => setQrOpen(false)}>
+              I've scanned it
+            </button>
           </div>
         </div>
       )}
