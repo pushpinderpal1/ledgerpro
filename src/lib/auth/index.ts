@@ -128,6 +128,7 @@ export const MODULE_PERMISSIONS: Record<string, EntityRole> = {
   'budget:write':    'ACCOUNTANT',
   'users:read':      'ADMIN',
   'users:write':     'ADMIN',
+  'audit:read':      'AUDITOR',
   'entity:settings': 'OWNER',
 }
 

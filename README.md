@@ -1,35 +1,25 @@
-# LedgerPro — QuickBooks-style Reports module
+# LedgerPro Audit Trail module
 
-Adds a full reports module modeled on QuickBooks: 10 reports across 3
-categories, a Reports landing page, customization bar with date-range
-presets, and CSV export.
+Adds a comprehensive audit trail: centralized logging helper with redaction
+of sensitive fields, a query API with filters and pagination, and a
+QuickBooks-style UI page accessible to OWNER / ADMIN / AUDITOR.
 
 ## What's in this zip
 
-- `src/app/page.tsx` — replaces existing. Adds the Reports page, landing view,
-  customization bar, and 10 report renderers.
-- `src/lib/reports/index.ts` — extends the existing reports engine with new
-  reports: Statement of Cash Flows, Journal Report, A/P Aging Detail,
-  Expenses by Vendor, and Profit & Loss with comparison columns.
-- `src/app/api/reports/route.ts` — dispatches the new report types.
-
-## Reports included
-
-**Business overview**
-- Profit & Loss
-- Profit & Loss Comparison (current vs prior period vs prior year)
-- Balance Sheet
-- Statement of Cash Flows (indirect method)
-
-**What you owe**
-- A/P Aging Summary (with bucket cards)
-- A/P Aging Detail (grouped by vendor)
-- Expenses by Vendor
-
-**For my accountant**
-- Trial Balance
-- General Ledger (with running balance per account)
-- Journal Report
+- `src/lib/audit/index.ts` — new helper. Use `logAudit({ entityId, userId,
+  action, resource, resourceId, before, after, request })` from any
+  state-changing operation. Auto-redacts passwords, secrets, ACH numbers, etc.
+- `src/app/api/audit/route.ts` — new GET endpoint. Filters by date range,
+  action, resource, user; paginated; returns aggregate facets so the UI can
+  populate filter dropdowns.
+- `src/app/api/periods/route.ts` — replaces existing. Now logs PERIOD_LOCKED
+  and PERIOD_RELEASED events (previously unaudited).
+- `src/lib/auth/index.ts` — replaces existing. Adds `audit:read` permission
+  (AUDITOR-level).
+- `src/app/page.tsx` — replaces existing. Adds the **Audit Trail** sidebar
+  item and full page with filter bar, paginated table, before/after diff
+  expansion, and CSV export.
+- `tests/audit-sanitize.test.ts` — 9 new tests for the sanitizer logic.
 
 ## Deploy steps
 
@@ -37,30 +27,53 @@ presets, and CSV export.
 2. Commit + push:
    ```
    git add -A
-   git commit -m "QuickBooks-style reports module"
+   git commit -m "Add audit trail module"
    git push
    ```
 3. No new env vars, no database migrations, no new dependencies.
 
 ## What you'll see
 
-- New **Reports** item in the sidebar
-- Landing page shows reports grouped by category with search
-- Click a report → opens with customization bar (date presets like "This year",
-  "Last quarter", "YTD", "Custom") + the actual report
-- Each report has **Refresh**, **Export CSV**, and **Print** buttons
-- Reports render in clean QuickBooks-like layout with section headers,
-  subtotals, grand totals, and percentage indicators
+- New **Audit Trail** item in the sidebar (visible to OWNER, ADMIN, AUDITOR)
+- Page shows a filter bar (date range, action dropdown, resource dropdown,
+  search by resource ID) and a paginated table of every audited event
+- Each row: timestamp, user (name + email), action badge (color-coded by
+  verb — green for create/post, red for void/delete, blue for update),
+  resource type, resource ID, IP address
+- Click "Show" on any row → expands a before/after JSON diff
+- "Export CSV" downloads the current filtered set
+- 50 entries per page, with pagination controls
 
-## Notes
+## What's audited today (no changes needed)
 
-- All reports derive from POSTED journal entries only — drafts and voids never
-  affect output.
-- All money math uses integer-cent arithmetic against Decimal(18,2) columns.
-- The Statement of Cash Flows uses the indirect method with pragmatic heuristics
-  for account classification (cash/bank by account-code prefix or subType).
-  When you add explicit classification flags to your Chart of Accounts (e.g.
-  current vs long-term assets), the cash-flow report will get more accurate
-  without changes to the UI.
-- Comparison report compares against the same-length prior period AND the
-  same period one year ago.
+- Journal entries — create, post, void
+- Payments — cheque issued, ACH issued, payment voided
+- Reconciliations — completed
+- Users — entity access grants, role changes, deactivations
+- Entities — created
+- **Period locks** — locked, released (new in this pass)
+
+## What's still not audited (gaps to close in a future pass)
+
+- Account changes (create, edit, deactivate)
+- AP invoice operations (create, edit, mark paid)
+- 2FA events (these are user-level, not entity-level — the AuditLog model
+  requires entityId so user-scoped events don't fit cleanly; would need a
+  separate UserAuditLog table or a schema change to make entityId optional)
+- Reconciliation start (only completion is logged today)
+
+To close these, replace the direct `db.auditLog.create(...)` calls in
+existing routes with the new `logAudit(...)` helper — it auto-redacts and
+adds IP capture.
+
+## Sanitization
+
+The helper automatically redacts any field whose name contains (case-
+insensitively): `password`, `secret`, `token`, `apiKey`, `totpSecret`,
+`jwt`, `sessionToken`, `achAccountNo`, `routingNo`, `codeHash`,
+`backupCode`. So you can safely pass full record objects as `before`/`after`
+without worrying about leaking credentials into the audit log.
+
+Tested: 9 unit tests cover redaction, nested redaction, depth limit, length
+cap, Date/BigInt serialization, and case-insensitive matching. Run with
+`npm test`.

@@ -39,6 +39,7 @@ const MODULE_ACCESS: Record<string, string[]> = {
   payments:   ['OWNER','ADMIN','ACCOUNTANT','AP_CLERK'],
   recon:      ['OWNER','ADMIN','ACCOUNTANT','AUDITOR'],
   reports:    ['OWNER','ADMIN','ACCOUNTANT','AUDITOR','CLIENT_VIEW'],
+  audit:      ['OWNER','ADMIN','AUDITOR'],
   periods:    ['OWNER','ADMIN'],
   payroll:    ['OWNER','ADMIN','PAYROLL_CLERK'],
   w2:         ['OWNER','ADMIN','PAYROLL_CLERK'],
@@ -89,6 +90,7 @@ export default function LedgerProApp() {
     { id: 'payments',  label: 'Payments',           icon: '✓' },
     { id: 'recon',     label: 'Bank Recon',         icon: '↔' },
     { id: 'reports',   label: 'Reports',            icon: '▤' },
+    { id: 'audit',     label: 'Audit Trail',        icon: '⊙' },
     { id: 'periods',   label: 'Period Locks',       icon: '🔒' },
     { id: 'payroll',   label: 'Payroll',            icon: '◷' },
     { id: 'w2',        label: 'W-2 / 1040-K',       icon: '◻' },
@@ -204,6 +206,7 @@ export default function LedgerProApp() {
                 {page === 'payments'  && <PaymentsPage   showToast={showToast} />}
                 {page === 'recon'     && <ReconPage      showToast={showToast} />}
                 {page === 'reports'   && <ReportsPage    showToast={showToast} />}
+                {page === 'audit'     && <AuditPage      showToast={showToast} />}
                 {page === 'periods'   && <PeriodsPage    showToast={showToast} />}
                 {page === 'payroll'   && <PayrollPage    showToast={showToast} />}
                 {page === 'w2'        && <W2Page         showToast={showToast} />}
@@ -2991,6 +2994,251 @@ function reportToCsvRows(def: ReportDef, data: unknown): (string | number)[][] {
       // Generic fallback: dump the JSON shape one key per row.
       return [['key','value'], ...Object.entries(d).map(([k, v]) => [k, typeof v === 'object' ? JSON.stringify(v) : String(v)])]
   }
+}
+
+// ─── Audit Trail ──────────────────────────────────────────────────────────────
+interface AuditEntry {
+  id: string
+  action: string
+  resource: string
+  resourceId: string | null
+  oldValue: string | null
+  newValue: string | null
+  ipAddress: string | null
+  createdAt: string
+  userId: string | null
+  user: { id: string; email: string; name: string } | null
+}
+interface AuditFacets {
+  actions: { value: string; count: number }[]
+  resources: { value: string; count: number }[]
+}
+
+// Color the action badge based on a coarse classification of the verb.
+const actionTone = (action: string): { bg: string; fg: string } => {
+  const a = action.toUpperCase()
+  if (/(VOID|DELET|RELEASE|REVOK|DISABL)/.test(a)) return { bg: '#fef2f2', fg: '#991b1b' }
+  if (/(POST|CREAT|ISSU|ADD|GRANT|ENABL|LOCK|FINAL)/.test(a)) return { bg: '#f0fdf4', fg: '#166534' }
+  if (/(UPDAT|EDIT|CHANG)/.test(a)) return { bg: '#eff6ff', fg: '#1d4ed8' }
+  return { bg: '#f1f5f9', fg: '#475569' }
+}
+
+function AuditPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => void }) {
+  const { currentEntity } = useApp()
+  const today = new Date()
+  const monthAgo = new Date(); monthAgo.setMonth(monthAgo.getMonth() - 1)
+  const [filters, setFilters] = useState({
+    from: monthAgo.toISOString().slice(0, 10),
+    to: today.toISOString().slice(0, 10),
+    action: '',
+    resource: '',
+    search: '',
+  })
+  const [rows, setRows] = useState<AuditEntry[]>([])
+  const [facets, setFacets] = useState<AuditFacets>({ actions: [], resources: [] })
+  const [total, setTotal] = useState(0)
+  const [page, setPage] = useState(1)
+  const [totalPages, setTotalPages] = useState(1)
+  const [loading, setLoading] = useState(false)
+  const [expandedId, setExpandedId] = useState<string | null>(null)
+  const limit = 50
+
+  const load = useCallback(async () => {
+    if (!currentEntity) return
+    setLoading(true)
+    try {
+      const params = new URLSearchParams({
+        entityId: currentEntity.id,
+        page: String(page),
+        limit: String(limit),
+      })
+      if (filters.from)     params.set('from', filters.from)
+      if (filters.to)       params.set('to', filters.to)
+      if (filters.action)   params.set('action', filters.action)
+      if (filters.resource) params.set('resource', filters.resource)
+      if (filters.search)   params.set('search', filters.search)
+      const res = await fetch(`/api/audit?${params}`)
+      if (!res.ok) {
+        const e = await res.json(); showToast(e.error ?? 'Failed to load', 'err'); return
+      }
+      const data = await res.json()
+      setRows(data.rows)
+      setFacets(data.facets)
+      setTotal(data.total)
+      setTotalPages(data.totalPages)
+    } finally { setLoading(false) }
+  }, [currentEntity, filters, page, showToast])
+
+  useEffect(() => { load() }, [load])
+
+  const resetFilters = () => {
+    setFilters({
+      from: monthAgo.toISOString().slice(0, 10),
+      to: today.toISOString().slice(0, 10),
+      action: '', resource: '', search: '',
+    })
+    setPage(1)
+  }
+
+  const exportCsv = () => {
+    if (rows.length === 0) { showToast('Nothing to export', 'err'); return }
+    const header = ['Timestamp', 'User', 'Action', 'Resource', 'Resource ID', 'IP', 'Old Value', 'New Value']
+    const csvRows = rows.map(r => [
+      new Date(r.createdAt).toISOString(),
+      r.user?.email ?? r.userId ?? 'system',
+      r.action,
+      r.resource,
+      r.resourceId ?? '',
+      r.ipAddress ?? '',
+      r.oldValue ?? '',
+      r.newValue ?? '',
+    ])
+    const csv = [header, ...csvRows].map(row =>
+      row.map(cell => {
+        const s = String(cell ?? '')
+        return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+      }).join(',')
+    ).join('\n')
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url; a.download = `audit-trail-${filters.from}_to_${filters.to}.csv`; a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  return (
+    <div>
+      <div style={S.pageActions}>
+        <div style={{ fontSize: 13, color: '#475569' }}>
+          {loading ? 'Loading…' : `${total.toLocaleString()} ${total === 1 ? 'entry' : 'entries'}`}
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button style={S.btn} onClick={load} disabled={loading}>Refresh</button>
+          <button style={{ ...S.btn, ...S.btnPrimary }} onClick={exportCsv} disabled={rows.length === 0}>Export CSV</button>
+        </div>
+      </div>
+
+      {/* Filter bar */}
+      <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, padding: 14, marginBottom: 16 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, alignItems: 'end' }}>
+          <div>
+            <label style={S.label}>From</label>
+            <input style={S.input} type="date" value={filters.from} onChange={e => { setFilters(f => ({ ...f, from: e.target.value })); setPage(1) }} />
+          </div>
+          <div>
+            <label style={S.label}>To</label>
+            <input style={S.input} type="date" value={filters.to} onChange={e => { setFilters(f => ({ ...f, to: e.target.value })); setPage(1) }} />
+          </div>
+          <div>
+            <label style={S.label}>Action</label>
+            <select style={S.select} value={filters.action} onChange={e => { setFilters(f => ({ ...f, action: e.target.value })); setPage(1) }}>
+              <option value="">All actions</option>
+              {facets.actions.map(a => <option key={a.value} value={a.value}>{a.value} ({a.count})</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={S.label}>Resource</label>
+            <select style={S.select} value={filters.resource} onChange={e => { setFilters(f => ({ ...f, resource: e.target.value })); setPage(1) }}>
+              <option value="">All resources</option>
+              {facets.resources.map(r => <option key={r.value} value={r.value}>{r.value} ({r.count})</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={S.label}>Search ID</label>
+            <input style={S.input} value={filters.search} onChange={e => { setFilters(f => ({ ...f, search: e.target.value })); setPage(1) }} placeholder="resource ID…" />
+          </div>
+          <div>
+            <button style={{ ...S.btn, width: '100%', justifyContent: 'center' }} onClick={resetFilters}>Reset</button>
+          </div>
+        </div>
+      </div>
+
+      {/* Audit table */}
+      <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead>
+            <tr>
+              {['When','User','Action','Resource','Resource ID','IP','Details'].map(h => (
+                <th key={h} style={{ background: '#f8fafc', fontWeight: 600, fontSize: 11, color: '#475569', textTransform: 'uppercase', letterSpacing: 0.06, padding: '10px 12px', borderBottom: '1px solid #e2e8f0', textAlign: 'left' }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 && !loading && (
+              <tr><td colSpan={7} style={{ padding: 40, textAlign: 'center', color: '#94a3b8' }}>No audit entries matching these filters</td></tr>
+            )}
+            {rows.map(r => {
+              const tone = actionTone(r.action)
+              const isOpen = expandedId === r.id
+              const hasValues = r.oldValue || r.newValue
+              return (
+                <Fragment key={r.id}>
+                  <tr>
+                    <td style={{ padding: '8px 12px', fontSize: 12, borderBottom: '1px solid #f1f5f9', whiteSpace: 'nowrap' }}>
+                      <div>{new Date(r.createdAt).toLocaleDateString()}</div>
+                      <div style={{ color: '#94a3b8', fontSize: 11 }}>{new Date(r.createdAt).toLocaleTimeString()}</div>
+                    </td>
+                    <td style={{ padding: '8px 12px', fontSize: 12, borderBottom: '1px solid #f1f5f9' }}>
+                      {r.user ? (
+                        <div>
+                          <div style={{ fontWeight: 500 }}>{r.user.name}</div>
+                          <div style={{ color: '#94a3b8', fontSize: 11 }}>{r.user.email}</div>
+                        </div>
+                      ) : <span style={{ color: '#94a3b8' }}>system</span>}
+                    </td>
+                    <td style={{ padding: '8px 12px', borderBottom: '1px solid #f1f5f9' }}>
+                      <span style={{ background: tone.bg, color: tone.fg, padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600, letterSpacing: 0.04 }}>{r.action}</span>
+                    </td>
+                    <td style={{ padding: '8px 12px', fontSize: 12, borderBottom: '1px solid #f1f5f9' }}>{r.resource}</td>
+                    <td style={{ padding: '8px 12px', fontSize: 11, fontFamily: 'monospace', color: '#64748b', borderBottom: '1px solid #f1f5f9' }}>{r.resourceId ?? '—'}</td>
+                    <td style={{ padding: '8px 12px', fontSize: 11, fontFamily: 'monospace', color: '#64748b', borderBottom: '1px solid #f1f5f9' }}>{r.ipAddress ?? '—'}</td>
+                    <td style={{ padding: '8px 12px', borderBottom: '1px solid #f1f5f9', textAlign: 'right' }}>
+                      {hasValues ? (
+                        <button style={S.textBtn} onClick={() => setExpandedId(isOpen ? null : r.id)}>
+                          {isOpen ? 'Hide' : 'Show'}
+                        </button>
+                      ) : <span style={{ color: '#cbd5e1', fontSize: 11 }}>—</span>}
+                    </td>
+                  </tr>
+                  {isOpen && hasValues && (
+                    <tr>
+                      <td colSpan={7} style={{ padding: '0 12px 14px', background: '#f8fafc', borderBottom: '1px solid #f1f5f9' }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: r.oldValue && r.newValue ? '1fr 1fr' : '1fr', gap: 12, marginTop: 8 }}>
+                          {r.oldValue && <div>
+                            <div style={{ fontSize: 11, fontWeight: 600, color: '#dc2626', textTransform: 'uppercase', letterSpacing: 0.06, marginBottom: 4 }}>Before</div>
+                            <pre style={{ background: '#fff', padding: 10, borderRadius: 6, border: '1px solid #fecaca', fontSize: 11, overflow: 'auto', maxHeight: 240, margin: 0 }}>{prettyJson(r.oldValue)}</pre>
+                          </div>}
+                          {r.newValue && <div>
+                            <div style={{ fontSize: 11, fontWeight: 600, color: '#16a34a', textTransform: 'uppercase', letterSpacing: 0.06, marginBottom: 4 }}>After</div>
+                            <pre style={{ background: '#fff', padding: 10, borderRadius: 6, border: '1px solid #bbf7d0', fontSize: 11, overflow: 'auto', maxHeight: 240, margin: 0 }}>{prettyJson(r.newValue)}</pre>
+                          </div>}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 12, marginTop: 16 }}>
+          <button style={S.btn} disabled={page === 1} onClick={() => setPage(p => p - 1)}>← Previous</button>
+          <div style={{ fontSize: 13, color: '#64748b' }}>Page {page} of {totalPages}</div>
+          <button style={S.btn} disabled={page === totalPages} onClick={() => setPage(p => p + 1)}>Next →</button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Render a JSON string with indentation; gracefully fall back to raw text if not JSON.
+function prettyJson(raw: string): string {
+  try { return JSON.stringify(JSON.parse(raw), null, 2) }
+  catch { return raw }
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────

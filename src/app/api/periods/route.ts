@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { z } from 'zod'
 import { requireEntityAccess } from '@/lib/auth'
 import { listLocks, lockPeriod, releaseLock } from '@/lib/periods'
+import { logAudit } from '@/lib/audit'
 
 // ─── GET /api/periods?entityId= ───────────────────────────────────────────────
 export async function GET(req: NextRequest) {
@@ -38,6 +39,15 @@ export async function POST(req: NextRequest) {
       reason: data.reason,
       lockedBy: auth.session?.userId,
     })
+    await logAudit({
+      entityId: data.entityId,
+      userId: auth.session?.userId,
+      action: 'PERIOD_LOCKED',
+      resource: 'LockedPeriod',
+      resourceId: lock.id,
+      after: { periodEnd: data.periodEnd, reason: data.reason },
+      request: req,
+    })
     return NextResponse.json(lock, { status: 201 })
   } catch (e) {
     if (e instanceof z.ZodError) return NextResponse.json({ error: e.errors }, { status: 400 })
@@ -61,5 +71,13 @@ export async function PATCH(req: NextRequest) {
   if (result.count === 0) {
     return NextResponse.json({ error: 'Lock not found or already released' }, { status: 404 })
   }
+  await logAudit({
+    entityId: body.entityId,
+    userId: auth.session?.userId,
+    action: 'PERIOD_RELEASED',
+    resource: 'LockedPeriod',
+    resourceId: body.id,
+    request: req,
+  })
   return NextResponse.json({ released: true })
 }
