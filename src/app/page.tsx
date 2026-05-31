@@ -4061,6 +4061,7 @@ function FxRatesPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => 
   const [rates, setRates] = useState<FxRate[]>([])
   const [filter, setFilter] = useState<{ from: string; to: string }>({ from: '', to: '' })
   const [showForm, setShowForm] = useState(false)
+  const [showFetch, setShowFetch] = useState(false)
   const today = new Date().toISOString().slice(0, 10)
   const [form, setForm] = useState({ fromCurrency: 'USD', toCurrency: 'EUR', rate: '', effectiveDate: today, source: 'manual', notes: '' })
   const [preview, setPreview] = useState({ amount: '1000', from: 'USD', to: 'EUR', date: today })
@@ -4132,7 +4133,12 @@ function FxRatesPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => 
             </select>
           </div>
         </div>
-        {canWrite && <button style={{ ...S.btn, ...S.btnPrimary }} onClick={() => setShowForm(o => !o)}>+ Add rate</button>}
+        {canWrite && (
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button style={S.btn} onClick={() => setShowFetch(true)}>↓ Fetch latest</button>
+            <button style={{ ...S.btn, ...S.btnPrimary }} onClick={() => setShowForm(o => !o)}>+ Add rate</button>
+          </div>
+        )}
       </div>
 
       {showForm && (
@@ -4213,7 +4219,100 @@ function FxRatesPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => 
           </tbody>
         </table>
       </div>
+
+      {showFetch && <FetchLatestModal onClose={() => setShowFetch(false)} onFetched={() => { setShowFetch(false); load() }} showToast={showToast} />}
     </div>
+  )
+}
+
+// Fetches rates from frankfurter.app (free, ECB-backed). Manual rates are
+// never overwritten — same (from, to, date) with source='manual' is skipped.
+function FetchLatestModal({ onClose, onFetched, showToast }: {
+  onClose: () => void; onFetched: () => void; showToast: (m: string, t?: 'ok'|'err') => void
+}) {
+  const today = new Date().toISOString().slice(0, 10)
+  const [base, setBase] = useState('USD')
+  const [date, setDate] = useState<'latest' | string>('latest')
+  const [customDate, setCustomDate] = useState(today)
+  const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState<{
+    base: string; effectiveDate: string; inserted: number;
+    skipped: { fromCurrency: string; toCurrency: string; reason: string }[];
+    unsupported: string[]
+  } | null>(null)
+
+  const fetchNow = async () => {
+    setBusy(true); setResult(null)
+    try {
+      const res = await fetch('/api/fx/fetch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ base, date: date === 'latest' ? 'latest' : customDate }),
+      })
+      const data = await res.json()
+      if (!res.ok) return showToast(data.error ?? 'Fetch failed', 'err')
+      setResult(data)
+      showToast(`Fetched ${data.inserted} rate${data.inserted === 1 ? '' : 's'} from frankfurter.app`)
+    } finally { setBusy(false) }
+  }
+
+  return (
+    <ModalOverlay onClose={onClose}>
+      <div style={S.cardHeader}>Fetch FX rates from frankfurter.app</div>
+      {!result && (
+        <>
+          <div style={{ fontSize: 13, color: '#475569', lineHeight: 1.6, marginBottom: 14 }}>
+            Free service backed by the European Central Bank. About 30 major currencies (USD, EUR, GBP, INR, JPY, CNY, SGD, etc.). ECB publishes rates each business day around 16:00 CET — weekend requests return Friday's rate.
+            <br/><br/>
+            <strong>Manual rates are never overwritten.</strong> If you've manually entered a rate for the same currency pair and date, it stays.
+          </div>
+          <div style={S.formGrid}>
+            <div>
+              <label style={S.label}>Base currency</label>
+              <select style={S.select} value={base} onChange={e => setBase(e.target.value)}>
+                {COMMON_CURRENCIES.map(c => <option key={c}>{c}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={S.label}>Date</label>
+              <select style={S.select} value={date} onChange={e => setDate(e.target.value)}>
+                <option value="latest">Latest (today's ECB publication)</option>
+                <option value="custom">Specific date…</option>
+              </select>
+            </div>
+            {date !== 'latest' && (
+              <div>
+                <label style={S.label}>Effective date</label>
+                <input style={S.input} type="date" value={customDate} max={today} onChange={e => setCustomDate(e.target.value)} />
+              </div>
+            )}
+          </div>
+          <div style={{ marginTop: 14, padding: 10, background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 6, fontSize: 12, color: '#1e3a8a' }}>
+            Rates are fetched for {base} against all available currencies. Will overwrite any non-manual (auto-fetched) rates for the same date, preserving any manually-entered overrides.
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
+            <button style={{ ...S.btn, ...S.btnPrimary }} onClick={fetchNow} disabled={busy}>{busy ? 'Fetching…' : 'Fetch now'}</button>
+            <button style={S.btn} onClick={onClose}>Cancel</button>
+          </div>
+        </>
+      )}
+      {result && (
+        <>
+          <div style={{ padding: 14, background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, marginBottom: 14 }}>
+            <div style={{ fontWeight: 600, color: '#166534', marginBottom: 6 }}>✓ Fetched from frankfurter.app</div>
+            <div style={{ fontSize: 13, color: '#166534', lineHeight: 1.6 }}>
+              <strong>{result.inserted}</strong> rates for base <strong>{result.base}</strong> as of <strong>{fmtDate(result.effectiveDate)}</strong>
+              {result.skipped.length > 0 && <><br/>{result.skipped.length} skipped — manual override exists for: {result.skipped.map(s => `${s.fromCurrency}/${s.toCurrency}`).join(', ')}</>}
+              {result.unsupported.length > 0 && <><br/><span style={{ color: '#92400e' }}>{result.unsupported.length} not published by ECB: {result.unsupported.join(', ')} — use manual entry</span></>}
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button style={{ ...S.btn, ...S.btnPrimary }} onClick={onFetched}>Done</button>
+            <button style={S.btn} onClick={() => setResult(null)}>Fetch another</button>
+          </div>
+        </>
+      )}
+    </ModalOverlay>
   )
 }
 
