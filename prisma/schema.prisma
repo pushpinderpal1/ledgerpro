@@ -18,12 +18,21 @@ model LegalEntity {
   address     String?
   phone       String?
   email       String?
-  currency    String   @default("USD")
+  currency    String   @default("USD")          // functional currency for this entity's books
   fiscalMonth Int      @default(1)
   logo        String?
   isActive    Boolean  @default(true)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+
+  // ── Corporate group structure ──
+  parentEntityId   String?                       // null = top-level (holding co or standalone)
+  ownershipPercent Decimal  @default(100) @db.Decimal(7, 4)   // % the parent owns of this entity
+  acquisitionDate  DateTime?                     // when the parent acquired this subsidiary
+  entityType       EntityType @default(STANDALONE)
+  // Self-relation: parent ↔ children
+  parent           LegalEntity?  @relation("EntityHierarchy", fields: [parentEntityId], references: [id], onDelete: SetNull)
+  children         LegalEntity[] @relation("EntityHierarchy")
 
   userAccess     EntityAccess[]
   accounts       Account[]
@@ -184,6 +193,33 @@ enum AccountType {
   REVENUE
   EXPENSE
   COGS
+}
+
+// ─── CORPORATE GROUP STRUCTURE ───────────────────────────────────────────────
+enum EntityType {
+  STANDALONE        // not part of any group
+  HOLDING           // parent — typically owns one or more subsidiaries
+  SUBSIDIARY        // owned by a holding co (could be partially or wholly)
+  BRANCH            // unincorporated arm of a parent; usually no separate accounts but supported
+}
+
+// Exchange rates between currency pairs. Lookups pick the row with the largest
+// effectiveDate <= the transaction date, so rates are "what was true at posting."
+// Both directions are not pre-computed — caller queries the right pair or inverts.
+model FxRate {
+  id             String   @id @default(cuid())
+  fromCurrency   String                          // e.g. "USD"
+  toCurrency     String                          // e.g. "EUR"
+  rate           Decimal  @db.Decimal(18, 8)     // 1 fromCurrency = `rate` toCurrency
+  effectiveDate  DateTime                        // date from which this rate applies
+  source         String?                         // "manual", "RBI", "ECB", "exchangerate-api", etc.
+  notes          String?
+  createdBy      String?
+  createdAt      DateTime @default(now())
+
+  @@unique([fromCurrency, toCurrency, effectiveDate])
+  @@index([fromCurrency, toCurrency])
+  @@map("fx_rates")
 }
 
 // ─── JOURNAL ENTRIES ─────────────────────────────────────────────────────────

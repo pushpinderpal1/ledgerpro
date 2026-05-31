@@ -41,6 +41,8 @@ const MODULE_ACCESS: Record<string, string[]> = {
   reports:    ['OWNER','ADMIN','ACCOUNTANT','AUDITOR','CLIENT_VIEW'],
   assets:     ['OWNER','ADMIN','ACCOUNTANT','AUDITOR'],
   audit:      ['OWNER','ADMIN','AUDITOR'],
+  group:      ['OWNER','ADMIN'],
+  fx:         ['OWNER','ADMIN','ACCOUNTANT'],
   periods:    ['OWNER','ADMIN'],
   payroll:    ['OWNER','ADMIN','PAYROLL_CLERK'],
   w2:         ['OWNER','ADMIN','PAYROLL_CLERK'],
@@ -93,6 +95,8 @@ export default function LedgerProApp() {
     { id: 'assets',    label: 'Fixed Assets',       icon: '⬚' },
     { id: 'reports',   label: 'Reports',            icon: '▤' },
     { id: 'audit',     label: 'Audit Trail',        icon: '⊙' },
+    { id: 'group',     label: 'Group Structure',    icon: '◇' },
+    { id: 'fx',        label: 'FX Rates',           icon: '⇄' },
     { id: 'periods',   label: 'Period Locks',       icon: '🔒' },
     { id: 'payroll',   label: 'Payroll',            icon: '◷' },
     { id: 'w2',        label: 'W-2 / 1040-K',       icon: '◻' },
@@ -210,6 +214,8 @@ export default function LedgerProApp() {
                 {page === 'assets'    && <AssetsPage     showToast={showToast} />}
                 {page === 'reports'   && <ReportsPage    showToast={showToast} />}
                 {page === 'audit'     && <AuditPage      showToast={showToast} />}
+                {page === 'group'     && <GroupPage      showToast={showToast} />}
+                {page === 'fx'        && <FxRatesPage    showToast={showToast} />}
                 {page === 'periods'   && <PeriodsPage    showToast={showToast} />}
                 {page === 'payroll'   && <PayrollPage    showToast={showToast} />}
                 {page === 'w2'        && <W2Page         showToast={showToast} />}
@@ -3848,6 +3854,364 @@ function ModalOverlay({ onClose, children }: { onClose: () => void; children: Re
     >
       <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, padding: 24, maxWidth: 540, width: '100%', boxShadow: '0 20px 60px rgba(0,0,0,0.3)', maxHeight: '90vh', overflow: 'auto' }}>
         {children}
+      </div>
+    </div>
+  )
+}
+
+// ─── Group Structure ──────────────────────────────────────────────────────────
+interface GroupNode {
+  id: string
+  name: string
+  slug: string
+  currency: string
+  entityType: 'STANDALONE'|'HOLDING'|'SUBSIDIARY'|'BRANCH'
+  parentEntityId: string | null
+  ownershipPercent: number
+  acquisitionDate: string | null
+  children: GroupNode[]
+}
+
+function GroupPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => void }) {
+  const { entities, role } = useApp()
+  const [tree, setTree] = useState<GroupNode[]>([])
+  const [editing, setEditing] = useState<GroupNode | null>(null)
+  const canWrite = role === 'OWNER' || role === 'ADMIN'
+
+  const load = useCallback(() => {
+    fetch('/api/group').then(r => r.json()).then(d => setTree(d.tree ?? []))
+  }, [])
+  useEffect(() => { load() }, [load])
+
+  // Flatten for the parent-picker dropdown (excluding the entity being edited
+  // and any of its descendants — those would create cycles).
+  const flatten = (nodes: GroupNode[], acc: GroupNode[] = []): GroupNode[] => {
+    for (const n of nodes) { acc.push(n); flatten(n.children, acc) }
+    return acc
+  }
+  const descendantIds = (node: GroupNode | null): Set<string> => {
+    const out = new Set<string>()
+    if (!node) return out
+    const visit = (n: GroupNode) => { out.add(n.id); n.children.forEach(visit) }
+    visit(node)
+    return out
+  }
+
+  return (
+    <div>
+      <div style={S.pageActions}>
+        <div style={{ fontSize: 13, color: '#475569', lineHeight: 1.5 }}>
+          Defines parent-subsidiary relationships across legal entities. Set a parent to mark an entity as a subsidiary, optionally tracking the ownership % and acquisition date.
+        </div>
+      </div>
+
+      <div style={S.card}>
+        <div style={S.cardHeader}>Corporate tree</div>
+        {tree.length === 0 && <div style={{ padding: 30, textAlign: 'center', color: '#94a3b8' }}>No entities visible</div>}
+        {tree.map(node => <TreeBranch key={node.id} node={node} depth={0} onEdit={canWrite ? setEditing : null} />)}
+      </div>
+
+      {editing && (
+        <GroupEditModal
+          entity={editing}
+          parentChoices={flatten(tree).filter(n => !descendantIds(editing).has(n.id))}
+          onClose={() => setEditing(null)}
+          onSaved={() => { setEditing(null); load() }}
+          showToast={showToast}
+        />
+      )}
+    </div>
+  )
+}
+
+function TreeBranch({ node, depth, onEdit }: { node: GroupNode; depth: number; onEdit: ((n: GroupNode) => void) | null }) {
+  const typeColor: Record<string, { bg: string; fg: string }> = {
+    HOLDING:    { bg: '#eff6ff', fg: '#1d4ed8' },
+    SUBSIDIARY: { bg: '#f0fdf4', fg: '#166534' },
+    BRANCH:     { bg: '#fffbeb', fg: '#92400e' },
+    STANDALONE: { bg: '#f1f5f9', fg: '#475569' },
+  }
+  const t = typeColor[node.entityType]
+  return (
+    <div>
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px',
+        borderBottom: '1px solid #f1f5f9', paddingLeft: 12 + depth * 28,
+      }}>
+        {depth > 0 && <span style={{ color: '#cbd5e1' }}>↳</span>}
+        <div style={{ flex: 1 }}>
+          <div style={{ fontWeight: 600, fontSize: 14 }}>{node.name}</div>
+          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2 }}>
+            {node.currency} {node.acquisitionDate && `• Acquired ${fmtDate(node.acquisitionDate)}`}
+          </div>
+        </div>
+        <span style={{ background: t.bg, color: t.fg, padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600 }}>{node.entityType}</span>
+        {node.parentEntityId && (
+          <div style={{ fontSize: 12, color: '#64748b', fontWeight: 500 }}>
+            {Number(node.ownershipPercent).toFixed(2)}%
+          </div>
+        )}
+        {onEdit && <button style={S.textBtn} onClick={() => onEdit(node)}>Edit</button>}
+      </div>
+      {node.children.map(c => <TreeBranch key={c.id} node={c} depth={depth + 1} onEdit={onEdit} />)}
+    </div>
+  )
+}
+
+function GroupEditModal({ entity, parentChoices, onClose, onSaved, showToast }: {
+  entity: GroupNode; parentChoices: GroupNode[]; onClose: () => void; onSaved: () => void
+  showToast: (m: string, t?: 'ok'|'err') => void
+}) {
+  const [parentId, setParentId] = useState(entity.parentEntityId ?? '')
+  const [pct, setPct] = useState(String(entity.ownershipPercent))
+  const [acqDate, setAcqDate] = useState(entity.acquisitionDate ? entity.acquisitionDate.slice(0, 10) : '')
+  const [entityType, setEntityType] = useState(entity.entityType)
+  const [busy, setBusy] = useState(false)
+
+  const save = async () => {
+    setBusy(true)
+    try {
+      const isSettingParent = parentId && parentId !== entity.parentEntityId
+      const isDetaching = !parentId && entity.parentEntityId
+      let body: Record<string, unknown>
+      if (isDetaching) {
+        body = { action: 'detach', entityId: entity.id }
+      } else if (isSettingParent) {
+        body = {
+          action: 'set-parent', entityId: entity.id, parentEntityId: parentId,
+          ownershipPercent: parseFloat(pct) || 100,
+          acquisitionDate: acqDate || undefined,
+          entityType,
+        }
+      } else {
+        body = {
+          action: 'update-meta', entityId: entity.id,
+          ownershipPercent: parseFloat(pct) || 100,
+          acquisitionDate: acqDate || null,
+          entityType,
+        }
+      }
+      const res = await fetch('/api/group', {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      if (res.ok) { showToast('Saved'); onSaved() }
+      else { const d = await res.json(); showToast(d.error ?? 'Error', 'err') }
+    } finally { setBusy(false) }
+  }
+
+  return (
+    <ModalOverlay onClose={onClose}>
+      <div style={S.cardHeader}>Group settings — {entity.name}</div>
+      <div style={{ fontSize: 13, color: '#475569', lineHeight: 1.5, marginBottom: 14 }}>
+        Configure parent entity and ownership. Currency is set on entity creation and can't be changed here.
+      </div>
+      <div style={S.formGrid}>
+        <div>
+          <label style={S.label}>Parent entity</label>
+          <select style={S.select} value={parentId} onChange={e => setParentId(e.target.value)}>
+            <option value="">— (top-level / no parent)</option>
+            {parentChoices.filter(p => p.id !== entity.id).map(p => (
+              <option key={p.id} value={p.id}>{p.name} ({p.currency})</option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label style={S.label}>Entity type</label>
+          <select style={S.select} value={entityType} onChange={e => setEntityType(e.target.value as GroupNode['entityType'])}>
+            <option value="STANDALONE">Standalone</option>
+            <option value="HOLDING">Holding company</option>
+            <option value="SUBSIDIARY">Subsidiary</option>
+            <option value="BRANCH">Branch</option>
+          </select>
+        </div>
+        <div>
+          <label style={S.label}>Ownership %</label>
+          <input style={S.input} value={pct} onChange={e => setPct(e.target.value)} placeholder="100" />
+        </div>
+        <div>
+          <label style={S.label}>Acquisition date</label>
+          <input style={S.input} type="date" value={acqDate} onChange={e => setAcqDate(e.target.value)} />
+        </div>
+      </div>
+      <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
+        <button style={{ ...S.btn, ...S.btnPrimary }} onClick={save} disabled={busy}>Save</button>
+        <button style={S.btn} onClick={onClose}>Cancel</button>
+      </div>
+    </ModalOverlay>
+  )
+}
+
+// ─── FX Rates ─────────────────────────────────────────────────────────────────
+interface FxRate {
+  id: string
+  fromCurrency: string
+  toCurrency: string
+  rate: number | string
+  effectiveDate: string
+  source: string | null
+  notes: string | null
+  createdAt: string
+}
+
+const COMMON_CURRENCIES = ['USD','EUR','GBP','CAD','AUD','INR','JPY','CNY','SGD','CHF','HKD','AED']
+
+function FxRatesPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => void }) {
+  const { role } = useApp()
+  const [rates, setRates] = useState<FxRate[]>([])
+  const [filter, setFilter] = useState<{ from: string; to: string }>({ from: '', to: '' })
+  const [showForm, setShowForm] = useState(false)
+  const today = new Date().toISOString().slice(0, 10)
+  const [form, setForm] = useState({ fromCurrency: 'USD', toCurrency: 'EUR', rate: '', effectiveDate: today, source: 'manual', notes: '' })
+  const [preview, setPreview] = useState({ amount: '1000', from: 'USD', to: 'EUR', date: today })
+  const [previewResult, setPreviewResult] = useState<{ converted: number; rate: number; effectiveDate: string; source: string } | null>(null)
+  const canWrite = role === 'OWNER'
+
+  const load = useCallback(() => {
+    const sp = new URLSearchParams()
+    if (filter.from) sp.set('from', filter.from)
+    if (filter.to)   sp.set('to',   filter.to)
+    fetch(`/api/fx?${sp}`).then(r => r.json()).then(d => setRates(d.rates ?? []))
+  }, [filter])
+  useEffect(() => { load() }, [load])
+
+  const save = async () => {
+    if (!form.fromCurrency || !form.toCurrency || !form.rate) return showToast('From, To, Rate are required', 'err')
+    if (form.fromCurrency === form.toCurrency) return showToast('From and To must differ', 'err')
+    const res = await fetch('/api/fx', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        fromCurrency: form.fromCurrency,
+        toCurrency: form.toCurrency,
+        rate: parseFloat(form.rate),
+        effectiveDate: form.effectiveDate,
+        source: form.source,
+        notes: form.notes || undefined,
+      }),
+    })
+    if (res.ok) {
+      showToast('Rate saved')
+      setShowForm(false)
+      setForm({ ...form, rate: '', notes: '' })
+      load()
+    } else {
+      const d = await res.json(); showToast(d.error ?? 'Error', 'err')
+    }
+  }
+
+  const del = async (id: string) => {
+    if (!confirm('Delete this rate? Existing transactions are unaffected.')) return
+    const res = await fetch(`/api/fx?id=${id}`, { method: 'DELETE' })
+    if (res.ok) { showToast('Deleted'); load() }
+  }
+
+  const runPreview = async () => {
+    const amt = parseFloat(preview.amount) || 0
+    const sp = new URLSearchParams({ convert: '1', amount: String(amt), from: preview.from, to: preview.to, date: preview.date })
+    const res = await fetch(`/api/fx?${sp}`)
+    if (res.ok) setPreviewResult(await res.json())
+    else { setPreviewResult(null); const d = await res.json(); showToast(d.error ?? 'No rate', 'err') }
+  }
+
+  return (
+    <div>
+      <div style={S.pageActions}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+          <div>
+            <label style={S.label}>From</label>
+            <select style={{ ...S.select, minWidth: 100 }} value={filter.from} onChange={e => setFilter(f => ({ ...f, from: e.target.value }))}>
+              <option value="">Any</option>
+              {COMMON_CURRENCIES.map(c => <option key={c}>{c}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={S.label}>To</label>
+            <select style={{ ...S.select, minWidth: 100 }} value={filter.to} onChange={e => setFilter(f => ({ ...f, to: e.target.value }))}>
+              <option value="">Any</option>
+              {COMMON_CURRENCIES.map(c => <option key={c}>{c}</option>)}
+            </select>
+          </div>
+        </div>
+        {canWrite && <button style={{ ...S.btn, ...S.btnPrimary }} onClick={() => setShowForm(o => !o)}>+ Add rate</button>}
+      </div>
+
+      {showForm && (
+        <div style={{ ...S.card, marginBottom: 16 }}>
+          <div style={S.cardHeader}>Add / override FX rate</div>
+          <div style={S.formGrid}>
+            <div>
+              <label style={S.label}>From currency</label>
+              <select style={S.select} value={form.fromCurrency} onChange={e => setForm(f => ({ ...f, fromCurrency: e.target.value }))}>
+                {COMMON_CURRENCIES.map(c => <option key={c}>{c}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={S.label}>To currency</label>
+              <select style={S.select} value={form.toCurrency} onChange={e => setForm(f => ({ ...f, toCurrency: e.target.value }))}>
+                {COMMON_CURRENCIES.map(c => <option key={c}>{c}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={S.label}>Rate (1 {form.fromCurrency} = ? {form.toCurrency})</label>
+              <input style={S.input} value={form.rate} onChange={e => setForm(f => ({ ...f, rate: e.target.value }))} placeholder="0.92000000" />
+            </div>
+            <div>
+              <label style={S.label}>Effective date</label>
+              <input style={S.input} type="date" value={form.effectiveDate} onChange={e => setForm(f => ({ ...f, effectiveDate: e.target.value }))} />
+            </div>
+            <div>
+              <label style={S.label}>Source</label>
+              <input style={S.input} value={form.source} onChange={e => setForm(f => ({ ...f, source: e.target.value }))} placeholder="manual, RBI, ECB…" />
+            </div>
+            <div>
+              <label style={S.label}>Notes</label>
+              <input style={S.input} value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} placeholder="Optional" />
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+            <button style={{ ...S.btn, ...S.btnPrimary }} onClick={save}>Save</button>
+            <button style={S.btn} onClick={() => setShowForm(false)}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {/* Conversion preview */}
+      <div style={{ ...S.card, marginBottom: 16 }}>
+        <div style={S.cardHeader}>Convert</div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+          <div><label style={S.label}>Amount</label><input style={{ ...S.input, maxWidth: 140 }} value={preview.amount} onChange={e => setPreview(p => ({ ...p, amount: e.target.value }))} /></div>
+          <div><label style={S.label}>From</label><select style={S.select} value={preview.from} onChange={e => setPreview(p => ({ ...p, from: e.target.value }))}>{COMMON_CURRENCIES.map(c => <option key={c}>{c}</option>)}</select></div>
+          <div><label style={S.label}>To</label><select style={S.select} value={preview.to} onChange={e => setPreview(p => ({ ...p, to: e.target.value }))}>{COMMON_CURRENCIES.map(c => <option key={c}>{c}</option>)}</select></div>
+          <div><label style={S.label}>As of</label><input style={S.input} type="date" value={preview.date} onChange={e => setPreview(p => ({ ...p, date: e.target.value }))} /></div>
+          <button style={{ ...S.btn, ...S.btnPrimary }} onClick={runPreview}>Convert</button>
+        </div>
+        {previewResult && (
+          <div style={{ marginTop: 14, padding: 12, background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, fontSize: 13 }}>
+            <strong>{previewResult.converted.toLocaleString()} {preview.to}</strong> at rate {previewResult.rate} <span style={{ color: '#64748b' }}>({previewResult.source === 'inverse' ? 'inverse of stored rate' : 'direct'}, effective {fmtDate(previewResult.effectiveDate)})</span>
+          </div>
+        )}
+      </div>
+
+      {/* Rate table */}
+      <div style={S.card}>
+        <div style={S.cardHeader}>Rate history ({rates.length})</div>
+        <table style={S.table}>
+          <thead><tr>{['From','To','Rate','Effective','Source','Notes',''].map(h => <th key={h} style={S.th}>{h}</th>)}</tr></thead>
+          <tbody>
+            {rates.length === 0 && <tr><td colSpan={7} style={{ ...S.td, textAlign: 'center', color: '#94a3b8' }}>No rates {filter.from || filter.to ? 'matching filter' : 'yet'}</td></tr>}
+            {rates.map(r => (
+              <tr key={r.id}>
+                <td style={{ ...S.td, fontFamily: 'monospace', fontWeight: 600 }}>{r.fromCurrency}</td>
+                <td style={{ ...S.td, fontFamily: 'monospace', fontWeight: 600 }}>{r.toCurrency}</td>
+                <td style={{ ...S.td, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{Number(r.rate).toFixed(8)}</td>
+                <td style={S.td}>{fmtDate(r.effectiveDate)}</td>
+                <td style={{ ...S.td, fontSize: 12, color: '#64748b' }}>{r.source ?? '—'}</td>
+                <td style={{ ...S.td, fontSize: 12, color: '#64748b' }}>{r.notes ?? ''}</td>
+                <td style={{ ...S.td, textAlign: 'right' }}>{canWrite && <button style={{ ...S.textBtn, color: '#dc2626' }} onClick={() => del(r.id)}>Delete</button>}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   )
