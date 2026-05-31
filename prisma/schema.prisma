@@ -37,6 +37,8 @@ model LegalEntity {
   auditLogs      AuditLog[]
   payments       Payment[]
   reconciliations BankReconciliation[]
+  lockedPeriods   LockedPeriod[]
+  idempotencyKeys IdempotencyKey[]
 
   @@map("legal_entities")
 }
@@ -53,11 +55,30 @@ model User {
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
+  // ── Two-factor authentication ──
+  totpSecret     String?                          // AES-GCM ciphertext (base64)
+  totpEnabled    Boolean   @default(false)
+  totpVerifiedAt DateTime?
+
   entityAccess EntityAccess[]
   auditLogs    AuditLog[]
   sessions     Session[]
+  backupCodes  BackupCode[]
 
   @@map("users")
+}
+
+model BackupCode {
+  id        String    @id @default(cuid())
+  userId    String
+  codeHash  String                                  // bcrypt hash of the code
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, usedAt])
+  @@map("backup_codes")
 }
 
 model Session {
@@ -531,6 +552,48 @@ model StatementLine {
 
   @@index([reconciliationId])
   @@map("statement_lines")
+}
+
+// ─── PERIOD LOCKING ──────────────────────────────────────────────────────────
+// Closes a fiscal period so no journal entries / payments dated on or before
+// `periodEnd` can be created or modified. OWNER/ADMIN can unlock if needed.
+model LockedPeriod {
+  id         String   @id @default(cuid())
+  entityId   String
+  periodEnd  DateTime                                 // inclusive cutoff
+  lockedAt   DateTime @default(now())
+  lockedBy   String?
+  reason     String?
+  releasedAt DateTime?
+  releasedBy String?
+
+  entity LegalEntity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+
+  @@index([entityId, periodEnd])
+  @@index([entityId, releasedAt])
+  @@map("locked_periods")
+}
+
+// ─── IDEMPOTENCY KEYS ─────────────────────────────────────────────────────────
+// Caches request outcomes so safe retries don't create duplicate payments / JEs.
+// Honored when an Idempotency-Key header is supplied to mutating endpoints.
+model IdempotencyKey {
+  id             String   @id @default(cuid())
+  key            String                                // user-supplied UUID
+  entityId       String
+  userId         String?
+  method         String
+  path           String
+  requestHash    String                                // SHA-256 of body
+  responseStatus Int
+  responseBody   String                                // JSON
+  createdAt      DateTime @default(now())
+
+  entity LegalEntity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+
+  @@unique([entityId, key])
+  @@index([createdAt])                                 // for periodic purge
+  @@map("idempotency_keys")
 }
 
 // ─── AUDIT LOG ───────────────────────────────────────────────────────────────

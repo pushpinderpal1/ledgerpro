@@ -35,6 +35,33 @@ export async function verifyToken(token: string): Promise<SessionPayload | null>
   }
 }
 
+// ─── 2FA challenge tokens ────────────────────────────────────────────────────
+// Short-lived (5 min) token issued after password check when 2FA is required.
+// Carries only the user id and a marker; cannot be used as a session cookie.
+
+export interface ChallengePayload {
+  userId: string
+  challenge: '2fa'
+}
+
+export async function signChallengeToken(userId: string): Promise<string> {
+  return new SignJWT({ userId, challenge: '2fa' } as Record<string, unknown>)
+    .setProtectedHeader({ alg: 'HS256' })
+    .setIssuedAt()
+    .setExpirationTime('5m')
+    .sign(SECRET)
+}
+
+export async function verifyChallengeToken(token: string): Promise<ChallengePayload | null> {
+  try {
+    const { payload } = await jwtVerify(token, SECRET)
+    if ((payload as { challenge?: string }).challenge !== '2fa') return null
+    return payload as unknown as ChallengePayload
+  } catch {
+    return null
+  }
+}
+
 // ─── Cookie helpers ───────────────────────────────────────────────────────────
 
 export async function getSession(): Promise<SessionPayload | null> {
@@ -47,7 +74,7 @@ export function setSessionCookie(res: NextResponse, token: string) {
   res.cookies.set(COOKIE, token, {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
+    sameSite: 'strict',
     maxAge: 60 * 60 * 24 * 7,
     path: '/',
   })
@@ -91,6 +118,10 @@ export const MODULE_PERMISSIONS: Record<string, EntityRole> = {
   'journals:write':  'ACCOUNTANT',
   'ap:read':         'AP_CLERK',
   'ap:write':        'AP_CLERK',
+  'payments:read':   'AP_CLERK',
+  'payments:write':  'ACCOUNTANT',
+  'recon:read':      'AUDITOR',
+  'recon:write':     'ACCOUNTANT',
   'payroll:read':    'PAYROLL_CLERK',
   'payroll:write':   'PAYROLL_CLERK',
   'budget:read':     'AUDITOR',

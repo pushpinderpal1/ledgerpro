@@ -2,21 +2,43 @@ import { NextRequest, NextResponse } from 'next/server'
 import { z } from 'zod'
 import { db } from '@/lib/db'
 import { hashPassword, signToken, setSessionCookie } from '@/lib/auth'
+import { checkRateLimit, recordFailure, clientKey } from '@/lib/security/rate-limit'
+import { checkPasswordStrength } from '@/lib/security/password'
 
 const schema = z.object({
-  name: z.string().min(2),
-  email: z.string().email(),
-  password: z.string().min(8),
-  firmName: z.string().min(2),  // First entity on signup
+  name: z.string().min(2).max(100),
+  email: z.string().email().max(254),
+  password: z.string().min(12).max(128),
+  firmName: z.string().min(2).max(100),  // First entity on signup
 })
 
 export async function POST(req: NextRequest) {
   try {
+    // Rate-limit registration by IP (anti-spam).
+    const rlKey = clientKey(req, 'register')
+    const rl = checkRateLimit(rlKey, { shortMax: 3, longMax: 10 })
+    if (!rl.allowed) {
+      return NextResponse.json(
+        { error: 'Too many sign-up attempts. Please try again later.' },
+        { status: 429, headers: { 'Retry-After': String(rl.retryAfterSeconds) } }
+      )
+    }
+
     const body = await req.json()
     const { name, email, password, firmName } = schema.parse(body)
 
+    // Enforce password complexity beyond Zod's bare length check.
+    const pw = checkPasswordStrength(password)
+    if (!pw.ok) {
+      recordFailure(rlKey)
+      return NextResponse.json({ error: pw.reasons.join('. ') }, { status: 400 })
+    }
+
     const exists = await db.user.findUnique({ where: { email: email.toLowerCase() } })
-    if (exists) return NextResponse.json({ error: 'Email already registered' }, { status: 409 })
+    if (exists) {
+      recordFailure(rlKey)
+      return NextResponse.json({ error: 'Email already registered' }, { status: 409 })
+    }
 
     const slug = firmName.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 50)
     const slugExists = await db.legalEntity.findUnique({ where: { slug } })
