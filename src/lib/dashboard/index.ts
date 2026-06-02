@@ -133,14 +133,14 @@ export async function computeDashboard(entityId: string): Promise<DashboardKpis>
     summary(entityId, ytdFrom, ytdTo),
   ])
 
-  // AP — open balance + overdue
+  // AP — open balance + overdue. AP open balance is amount - amountPaid.
   const apInvoices = await db.apInvoice.findMany({
     where: { entityId, status: { not: 'VOID' } },
-    select: { balance: true, dueDate: true, status: true },
+    select: { amount: true, amountPaid: true, dueDate: true, status: true },
   })
   let apOpen = 0, apOverdue = 0, apOverdueCount = 0
   for (const inv of apInvoices) {
-    const bal = Number(inv.balance)
+    const bal = Number(inv.amount) - Number(inv.amountPaid)
     if (bal <= 0) continue
     apOpen += bal
     if (inv.dueDate < now) { apOverdue += bal; apOverdueCount++ }
