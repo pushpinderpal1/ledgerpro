@@ -61,6 +61,8 @@ model LegalEntity {
   apRequests     ApRequest[]
   attachments    Attachment[]
   statementTemplates StatementTemplate[]
+  paymentModes   PaymentMode[]
+  receipts       Receipt[]
 
   @@map("legal_entities")
 }
@@ -185,6 +187,8 @@ model Account {
   journalLines JournalLine[]
   apInvoices   ApInvoice[]
   apRequests   ApRequest[]  @relation("ApRequestAccount")
+  receiptDeposits Receipt[] @relation("ReceiptDepositAccount")
+  receiptCredits  Receipt[] @relation("ReceiptCreditAccount")
   budgetLines  BudgetLine[]
   paymentsFrom Payment[]            @relation("PaymentBankAccount")
   reconciliations BankReconciliation[]
@@ -252,6 +256,8 @@ model JournalEntry {
 
   entity LegalEntity  @relation(fields: [entityId], references: [id], onDelete: Cascade)
   lines  JournalLine[]
+  receiptPosted    Receipt? @relation("ReceiptJournalEntry")
+  receiptVoided    Receipt? @relation("ReceiptVoidJournalEntry")
 
   @@unique([entityId, ref])
   @@map("journal_entries")
@@ -963,4 +969,86 @@ model StatementTemplate {
   @@unique([entityId, name])
   @@index([entityId])
   @@map("statement_templates")
+}
+
+// ─── PAYMENT MODES + RECEIPTS ─────────────────────────────────────────────────
+// Configurable payment-method catalog shared by AP payments and Receipts.
+// Seeded with sensible defaults the first time an entity is queried (lazy
+// seed in the API).
+//
+// PaymentMode.kind controls which transaction types can use a given mode:
+//   PAYMENT — outgoing only (AP)
+//   RECEIPT — incoming only (AR)
+//   BOTH    — works for both
+//
+// Receipts are the income counterpart to AP Payments. Each Receipt creates
+// a balanced journal entry: DR Deposit account / CR Credit account
+// (typically a revenue or AR account).
+
+enum PaymentModeKind {
+  PAYMENT
+  RECEIPT
+  BOTH
+}
+
+model PaymentMode {
+  id          String          @id @default(cuid())
+  entityId    String
+  name        String                              // display: "Cheque", "Wire Transfer"
+  code        String                              // canonical: "CHEQUE", "WIRE"
+  kind        PaymentModeKind @default(BOTH)
+  isActive    Boolean         @default(true)
+  sortOrder   Int             @default(0)
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  entity      LegalEntity     @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  receipts    Receipt[]
+
+  @@unique([entityId, code])
+  @@index([entityId])
+  @@map("payment_modes")
+}
+
+enum ReceiptStatus {
+  POSTED
+  VOID
+}
+
+model Receipt {
+  id              String        @id @default(cuid())
+  entityId        String
+  receiptNo       String                                  // auto-generated: RCP-YYYY-NNNN
+  receivedFrom    String                                  // payer name (customer)
+  receiptDate     DateTime
+  amount          Decimal       @db.Decimal(18, 2)
+  paymentModeId   String
+  reference       String?
+  description     String?
+
+  // Posting accounts
+  depositAccountId String                                 // DR — bank account receiving funds
+  creditAccountId  String                                 // CR — revenue / AR account
+
+  status          ReceiptStatus @default(POSTED)
+  voidedAt        DateTime?
+  voidedBy        String?
+
+  journalEntryId  String?       @unique                   // link to posted JE
+  voidJournalEntryId String?    @unique                   // link to reversing JE on void
+  createdBy       String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  entity          LegalEntity   @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  paymentMode     PaymentMode   @relation(fields: [paymentModeId], references: [id], onDelete: Restrict)
+  depositAccount  Account       @relation("ReceiptDepositAccount", fields: [depositAccountId], references: [id], onDelete: Restrict)
+  creditAccount   Account       @relation("ReceiptCreditAccount",  fields: [creditAccountId],  references: [id], onDelete: Restrict)
+  journalEntry    JournalEntry? @relation("ReceiptJournalEntry",     fields: [journalEntryId],     references: [id], onDelete: SetNull)
+  voidJournalEntry JournalEntry? @relation("ReceiptVoidJournalEntry", fields: [voidJournalEntryId], references: [id], onDelete: SetNull)
+
+  @@unique([entityId, receiptNo])
+  @@index([entityId, status])
+  @@index([entityId, receiptDate])
+  @@map("receipts")
 }

@@ -38,6 +38,8 @@ const MODULE_ACCESS: Record<string, string[]> = {
   ap:         ['OWNER','ADMIN','ACCOUNTANT','AP_CLERK'],
   'ap-requests': ['OWNER','ADMIN','ACCOUNTANT','AP_CLERK','AUDITOR'],
   payments:   ['OWNER','ADMIN','ACCOUNTANT','AP_CLERK'],
+  receipts:   ['OWNER','ADMIN','ACCOUNTANT','AUDITOR'],
+  'payment-modes': ['OWNER','ADMIN','ACCOUNTANT','AUDITOR'],
   recon:      ['OWNER','ADMIN','ACCOUNTANT','AUDITOR'],
   'vendor-recon': ['OWNER','ADMIN','ACCOUNTANT','AUDITOR','AP_CLERK'],
   reports:    ['OWNER','ADMIN','ACCOUNTANT','AUDITOR','CLIENT_VIEW'],
@@ -115,13 +117,16 @@ export default function LedgerProApp() {
     ]},
     { group: 'Books', items: [
       { id: 'accounts', label: 'Chart of Accounts', icon: '≡' },
-      { id: 'journals', label: 'Journal Entries',   icon: '✎' },
       { id: 'periods',  label: 'Period Locks',      icon: '🔒' },
+    ]},
+    { group: 'Transaction Posting', items: [
+      { id: 'journals',  label: 'Journal Entries', icon: '✎' },
+      { id: 'payments',  label: 'Payments',        icon: '✓' },
+      { id: 'receipts',  label: 'Receipts',        icon: '↓' },
     ]},
     { group: 'Payables', items: [
       { id: 'ap',           label: 'AP Tracker',       icon: '◎' },
       { id: 'ap-requests',  label: 'Expense Requests', icon: '📥' },
-      { id: 'payments',     label: 'Payments',         icon: '✓' },
     ]},
     { group: 'Reconciliations', items: [
       { id: 'recon',        label: 'Bank Recon',    icon: '↔' },
@@ -141,9 +146,10 @@ export default function LedgerProApp() {
       { id: 'mis',    label: 'MIS / Departments', icon: '⊞' },
     ]},
     { group: 'Setup', items: [
-      { id: 'group', label: 'Group Structure', icon: '◇' },
-      { id: 'fx',    label: 'FX Rates',        icon: '⇄' },
-      { id: 'iif',   label: 'QB IIF',          icon: '⇄' },
+      { id: 'group',          label: 'Group Structure', icon: '◇' },
+      { id: 'fx',             label: 'FX Rates',        icon: '⇄' },
+      { id: 'payment-modes',  label: 'Payment Modes',   icon: '◍' },
+      { id: 'iif',            label: 'QB IIF',          icon: '⇄' },
     ]},
     { group: 'Admin', items: [
       { id: 'audit',    label: 'Audit Trail',     icon: '⊙' },
@@ -303,6 +309,8 @@ export default function LedgerProApp() {
                 {page === 'ap'        && <ApPage         showToast={showToast} />}
                 {page === 'ap-requests' && <ApRequestsPage showToast={showToast} />}
                 {page === 'payments'  && <PaymentsPage   showToast={showToast} />}
+                {page === 'receipts'  && <ReceiptsPage   showToast={showToast} />}
+                {page === 'payment-modes' && <PaymentModesPage showToast={showToast} />}
                 {page === 'recon'     && <ReconPage      showToast={showToast} />}
                 {page === 'vendor-recon' && <VendorReconPage showToast={showToast} />}
                 {page === 'assets'    && <AssetsPage     showToast={showToast} />}
@@ -7206,6 +7214,365 @@ function StTemplateRunner({ templateId, onClose, showToast }: {
           </>
         )}
         {!loading && !data && <div style={{ textAlign: 'center', padding: 60, color: '#94a3b8' }}>No data</div>}
+      </div>
+    </div>
+  )
+}
+
+// ─── Receipts (incoming money) ────────────────────────────────────────────────
+interface PaymentMode { id: string; name: string; code: string; kind: 'PAYMENT'|'RECEIPT'|'BOTH'; isActive: boolean; sortOrder: number }
+interface Receipt {
+  id: string
+  receiptNo: string
+  receivedFrom: string
+  receiptDate: string
+  amount: number | string
+  paymentModeId: string
+  reference: string | null
+  description: string | null
+  depositAccountId: string
+  creditAccountId: string
+  status: 'POSTED' | 'VOID'
+  paymentMode?: { name: string; code: string }
+  depositAccount?: { code: string; name: string }
+  creditAccount?:  { code: string; name: string }
+  journalEntry?: { ref: string } | null
+}
+
+function ReceiptsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => void }) {
+  const { currentEntity, role } = useApp()
+  const [receipts, setReceipts] = useState<Receipt[]>([])
+  const [summary, setSummary] = useState<{ total: number; countPosted: number; countVoid: number }>({ total: 0, countPosted: 0, countVoid: 0 })
+  const [accounts, setAccounts] = useState<Account[]>([])
+  const [modes, setModes] = useState<PaymentMode[]>([])
+  const [showForm, setShowForm] = useState(false)
+  const [statusFilter, setStatusFilter] = useState<'ALL'|'POSTED'|'VOID'>('ALL')
+  const canWrite = ['OWNER','ADMIN','ACCOUNTANT'].includes(role)
+
+  const today = new Date().toISOString().slice(0, 10)
+  const [form, setForm] = useState({
+    receivedFrom: '', receiptDate: today, amount: '',
+    paymentModeId: '', reference: '', description: '',
+    depositAccountId: '', creditAccountId: '',
+  })
+
+  const load = useCallback(() => {
+    if (!currentEntity) return
+    fetch(`/api/receipts?entityId=${currentEntity.id}${statusFilter !== 'ALL' ? '&status=' + statusFilter : ''}`).then(r => r.json()).then(d => {
+      setReceipts(d.receipts ?? [])
+      setSummary(d.summary ?? { total: 0, countPosted: 0, countVoid: 0 })
+    })
+    fetch(`/api/accounts?entityId=${currentEntity.id}`).then(r => r.json()).then(setAccounts)
+    fetch(`/api/payment-modes?entityId=${currentEntity.id}&kind=RECEIPT`).then(r => r.json()).then(d => setModes(d.modes ?? []))
+  }, [currentEntity, statusFilter])
+  useEffect(() => { load() }, [load])
+
+  // Suggested deposit accounts: bank accounts (isBankAccount = true)
+  const bankAccounts = accounts.filter(a => a.isBankAccount && a.isActive)
+  // Suggested credit accounts: REVENUE + ASSET (for AR) — exclude the deposit account itself
+  const creditAccounts = accounts.filter(a => a.isActive && (a.type === 'REVENUE' || a.type === 'ASSET'))
+
+  // Auto-select first bank account once they're loaded
+  useEffect(() => {
+    if (bankAccounts.length > 0 && !form.depositAccountId) {
+      setForm(f => ({ ...f, depositAccountId: bankAccounts[0].id }))
+    }
+    if (modes.length > 0 && !form.paymentModeId) {
+      setForm(f => ({ ...f, paymentModeId: modes[0].id }))
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bankAccounts.length, modes.length])
+
+  const submit = async () => {
+    if (!currentEntity) return
+    if (!form.receivedFrom.trim()) return showToast('Received from is required', 'err')
+    if (!form.depositAccountId) return showToast('Pick a deposit (bank) account', 'err')
+    if (!form.creditAccountId) return showToast('Pick a credit account (revenue or AR)', 'err')
+    if (!form.paymentModeId) return showToast('Pick a payment mode', 'err')
+    const amt = parseFloat(form.amount)
+    if (!amt || amt <= 0) return showToast('Enter a positive amount', 'err')
+
+    const res = await fetch('/api/receipts', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        entityId: currentEntity.id,
+        receivedFrom: form.receivedFrom,
+        receiptDate: form.receiptDate,
+        amount: amt,
+        paymentModeId: form.paymentModeId,
+        reference: form.reference || undefined,
+        description: form.description || undefined,
+        depositAccountId: form.depositAccountId,
+        creditAccountId: form.creditAccountId,
+      }),
+    })
+    const d = await res.json()
+    if (res.ok) {
+      showToast(`Receipt ${d.receipt?.receiptNo} posted — journal ${d.journalRef}`)
+      setShowForm(false)
+      setForm({ receivedFrom: '', receiptDate: today, amount: '', paymentModeId: modes[0]?.id ?? '', reference: '', description: '', depositAccountId: bankAccounts[0]?.id ?? '', creditAccountId: '' })
+      load()
+    } else showToast(d.error ?? 'Failed', 'err')
+  }
+
+  const voidReceipt = async (id: string, receiptNo: string) => {
+    if (!currentEntity) return
+    if (!confirm(`Void receipt ${receiptNo}? A reversing journal entry will be created. This cannot be undone.`)) return
+    const res = await fetch('/api/receipts', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ entityId: currentEntity.id, id, action: 'void' }),
+    })
+    const d = await res.json()
+    if (res.ok) { showToast(`Voided — reversing JE ${d.voidJournalRef}`); load() }
+    else showToast(d.error ?? 'Void failed', 'err')
+  }
+
+  return (
+    <div>
+      <div style={S.kpiGrid}>
+        {[
+          { label: 'Total received (posted)', value: `$${fmt(summary.total)}`, color: '#16a34a' },
+          { label: 'Posted receipts', value: summary.countPosted, color: '#0891b2' },
+          { label: 'Voided receipts', value: summary.countVoid, color: '#94a3b8' },
+        ].map(k => (
+          <div key={k.label} style={S.kpiCard}>
+            <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 4 }}>{k.label}</div>
+            <div style={{ fontSize: 24, fontWeight: 700, color: k.color }}>{k.value}</div>
+          </div>
+        ))}
+      </div>
+
+      <div style={S.pageActions}>
+        <div style={{ display: 'flex', gap: 6 }}>
+          {(['ALL','POSTED','VOID'] as const).map(s => (
+            <button key={s} style={{ ...S.filterBtn, ...(statusFilter === s ? S.filterBtnActive : {}) }} onClick={() => setStatusFilter(s)}>{s}</button>
+          ))}
+        </div>
+        {canWrite && <button style={{ ...S.btn, ...S.btnPrimary }} onClick={() => setShowForm(o => !o)}>+ New receipt</button>}
+      </div>
+
+      {showForm && (
+        <div style={{ ...S.card, marginBottom: 16 }}>
+          <div style={S.cardHeader}>Record a receipt</div>
+
+          {bankAccounts.length === 0 && (
+            <div style={{ padding: 10, background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, fontSize: 12, color: '#991b1b', marginBottom: 12 }}>
+              No bank accounts available. Go to Chart of Accounts → edit a bank/cash account → tick "Is bank account".
+            </div>
+          )}
+          {modes.length === 0 && (
+            <div style={{ padding: 10, background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, fontSize: 12, color: '#991b1b', marginBottom: 12 }}>
+              No receipt payment modes configured. Visit Setup → Payment Modes to add some.
+            </div>
+          )}
+
+          <div style={S.formGrid}>
+            <div>
+              <label style={S.label}>Received from</label>
+              <input style={S.input} value={form.receivedFrom} onChange={e => setForm(f => ({ ...f, receivedFrom: e.target.value }))} placeholder="Customer / payer name" />
+            </div>
+            <div>
+              <label style={S.label}>Receipt date</label>
+              <input style={S.input} type="date" value={form.receiptDate} onChange={e => setForm(f => ({ ...f, receiptDate: e.target.value }))} />
+            </div>
+            <div>
+              <label style={S.label}>Amount</label>
+              <input style={S.input} value={form.amount} onChange={e => setForm(f => ({ ...f, amount: e.target.value }))} placeholder="0.00" />
+            </div>
+            <div>
+              <label style={S.label}>Payment mode</label>
+              <select style={S.select} value={form.paymentModeId} onChange={e => setForm(f => ({ ...f, paymentModeId: e.target.value }))}>
+                <option value="">— select —</option>
+                {modes.filter(m => m.isActive).map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={S.label}>Deposit account (DR)</label>
+              <select style={S.select} value={form.depositAccountId} onChange={e => setForm(f => ({ ...f, depositAccountId: e.target.value }))}>
+                <option value="">— select bank/cash —</option>
+                {bankAccounts.map(a => <option key={a.id} value={a.id}>{a.code} — {a.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={S.label}>Credit account (CR)</label>
+              <select style={S.select} value={form.creditAccountId} onChange={e => setForm(f => ({ ...f, creditAccountId: e.target.value }))}>
+                <option value="">— select revenue / AR —</option>
+                {creditAccounts.map(a => <option key={a.id} value={a.id}>{a.code} — {a.name} ({a.type})</option>)}
+              </select>
+            </div>
+            <div style={{ gridColumn: '1 / -1' }}>
+              <label style={S.label}>Reference (cheque #, txn id, etc.)</label>
+              <input style={S.input} value={form.reference} onChange={e => setForm(f => ({ ...f, reference: e.target.value }))} placeholder="optional" />
+            </div>
+            <div style={{ gridColumn: '1 / -1' }}>
+              <label style={S.label}>Description</label>
+              <input style={S.input} value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} placeholder="optional" />
+            </div>
+          </div>
+
+          {form.depositAccountId && form.creditAccountId && form.amount && (
+            <div style={{ padding: 10, background: '#f8fafc', borderRadius: 6, fontSize: 12, color: '#475569', marginTop: 12 }}>
+              <strong>Posting:</strong> DR {accounts.find(a => a.id === form.depositAccountId)?.code} ${fmt(parseFloat(form.amount) || 0)} / CR {accounts.find(a => a.id === form.creditAccountId)?.code} ${fmt(parseFloat(form.amount) || 0)}
+            </div>
+          )}
+
+          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+            <button style={{ ...S.btn, ...S.btnPrimary }} onClick={submit} disabled={bankAccounts.length === 0 || modes.length === 0}>Record receipt</button>
+            <button style={S.btn} onClick={() => setShowForm(false)}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      <div style={S.card}>
+        <table style={S.table}>
+          <thead><tr>{['Receipt #','Date','Received from','Amount','Mode','Deposit','Credit','JE','Status',''].map(h => <th key={h} style={S.th}>{h}</th>)}</tr></thead>
+          <tbody>
+            {receipts.length === 0 && <tr><td colSpan={10} style={{ ...S.td, textAlign: 'center', color: '#94a3b8' }}>No receipts yet</td></tr>}
+            {receipts.map(r => (
+              <tr key={r.id} style={{ opacity: r.status === 'VOID' ? 0.55 : 1 }}>
+                <td style={{ ...S.td, fontFamily: 'monospace', fontSize: 11 }}>{r.receiptNo}</td>
+                <td style={S.td}>{fmtDate(r.receiptDate)}</td>
+                <td style={{ ...S.td, fontWeight: 500 }}>{r.receivedFrom}</td>
+                <td style={{ ...S.td, textAlign: 'right', fontFamily: 'monospace', fontWeight: 600 }}>${fmt(Number(r.amount))}</td>
+                <td style={{ ...S.td, fontSize: 12 }}>{r.paymentMode?.name ?? '—'}</td>
+                <td style={{ ...S.td, fontSize: 12 }}>{r.depositAccount?.code ?? ''} {r.depositAccount?.name ? '— ' + r.depositAccount.name : ''}</td>
+                <td style={{ ...S.td, fontSize: 12 }}>{r.creditAccount?.code ?? ''} {r.creditAccount?.name ? '— ' + r.creditAccount.name : ''}</td>
+                <td style={{ ...S.td, fontFamily: 'monospace', fontSize: 11, color: '#64748b' }}>{r.journalEntry?.ref ?? ''}</td>
+                <td style={S.td}>
+                  <span style={{ padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600, background: r.status === 'POSTED' ? '#dcfce7' : '#fee2e2', color: r.status === 'POSTED' ? '#166534' : '#991b1b' }}>
+                    {r.status}
+                  </span>
+                </td>
+                <td style={{ ...S.td, textAlign: 'right' }}>
+                  {canWrite && r.status === 'POSTED' && <button style={{ ...S.textBtn, color: '#dc2626' }} onClick={() => voidReceipt(r.id, r.receiptNo)}>Void</button>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+// ─── Payment Modes management ────────────────────────────────────────────────
+function PaymentModesPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => void }) {
+  const { currentEntity, role } = useApp()
+  const [modes, setModes] = useState<PaymentMode[]>([])
+  const [showForm, setShowForm] = useState(false)
+  const [form, setForm] = useState({ name: '', code: '', kind: 'BOTH' as 'PAYMENT'|'RECEIPT'|'BOTH' })
+  const canWrite = ['OWNER','ADMIN'].includes(role)
+
+  const load = useCallback(() => {
+    if (!currentEntity) return
+    fetch(`/api/payment-modes?entityId=${currentEntity.id}`).then(r => r.json()).then(d => setModes(d.modes ?? []))
+  }, [currentEntity])
+  useEffect(() => { load() }, [load])
+
+  const create = async () => {
+    if (!currentEntity) return
+    if (!form.name.trim() || !form.code.trim()) return showToast('Name and code are required', 'err')
+    const res = await fetch('/api/payment-modes', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ entityId: currentEntity.id, name: form.name, code: form.code.toUpperCase().replace(/[^A-Z0-9_]/g, '_'), kind: form.kind }),
+    })
+    const d = await res.json()
+    if (res.ok) { showToast('Mode added'); setShowForm(false); setForm({ name: '', code: '', kind: 'BOTH' }); load() }
+    else showToast(Array.isArray(d.error) ? d.error[0]?.message ?? 'Failed' : d.error ?? 'Failed', 'err')
+  }
+
+  const update = async (id: string, patch: Partial<PaymentMode>) => {
+    if (!currentEntity) return
+    const res = await fetch('/api/payment-modes', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ entityId: currentEntity.id, id, ...patch }),
+    })
+    if (res.ok) load()
+    else { const d = await res.json(); showToast(d.error ?? 'Failed', 'err') }
+  }
+
+  const remove = async (id: string, name: string) => {
+    if (!currentEntity) return
+    if (!confirm(`Delete payment mode "${name}"? Use Deactivate instead if it's been used by any receipts/payments.`)) return
+    const res = await fetch(`/api/payment-modes?entityId=${currentEntity.id}&id=${id}`, { method: 'DELETE' })
+    if (res.ok) { showToast('Deleted'); load() }
+    else { const d = await res.json(); showToast(d.error ?? 'Failed', 'err') }
+  }
+
+  return (
+    <div>
+      <div style={S.pageActions}>
+        <div style={{ fontSize: 13, color: '#475569', maxWidth: 720, lineHeight: 1.5 }}>
+          Configure the payment methods shown on Receipts (incoming) and AP Payments (outgoing).
+          Each mode can be used for receipts only, payments only, or both. Default modes are
+          seeded the first time you visit this page.
+        </div>
+        {canWrite && <button style={{ ...S.btn, ...S.btnPrimary }} onClick={() => setShowForm(o => !o)}>+ New mode</button>}
+      </div>
+
+      {showForm && (
+        <div style={{ ...S.card, marginBottom: 16 }}>
+          <div style={S.cardHeader}>New payment mode</div>
+          <div style={S.formGrid}>
+            <div>
+              <label style={S.label}>Name</label>
+              <input style={S.input} value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. PayPal" />
+            </div>
+            <div>
+              <label style={S.label}>Code (uppercase)</label>
+              <input style={S.input} value={form.code} onChange={e => setForm(f => ({ ...f, code: e.target.value.toUpperCase() }))} placeholder="PAYPAL" />
+            </div>
+            <div>
+              <label style={S.label}>Used for</label>
+              <select style={S.select} value={form.kind} onChange={e => setForm(f => ({ ...f, kind: e.target.value as typeof f.kind }))}>
+                <option value="BOTH">Both — payments and receipts</option>
+                <option value="PAYMENT">Payments only (outgoing)</option>
+                <option value="RECEIPT">Receipts only (incoming)</option>
+              </select>
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+            <button style={{ ...S.btn, ...S.btnPrimary }} onClick={create}>Create</button>
+            <button style={S.btn} onClick={() => setShowForm(false)}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      <div style={S.card}>
+        <table style={S.table}>
+          <thead><tr>{['Name','Code','Used for','Active','Sort',''].map(h => <th key={h} style={S.th}>{h}</th>)}</tr></thead>
+          <tbody>
+            {modes.length === 0 && <tr><td colSpan={6} style={{ ...S.td, textAlign: 'center', color: '#94a3b8' }}>Loading modes…</td></tr>}
+            {modes.map(m => (
+              <tr key={m.id} style={{ opacity: m.isActive ? 1 : 0.5 }}>
+                <td style={{ ...S.td, fontWeight: 500 }}>{m.name}</td>
+                <td style={{ ...S.td, fontFamily: 'monospace', fontSize: 12, color: '#64748b' }}>{m.code}</td>
+                <td style={S.td}>
+                  {canWrite ? (
+                    <select style={{ ...S.select, padding: '2px 6px', fontSize: 12 }} value={m.kind} onChange={e => update(m.id, { kind: e.target.value as PaymentMode['kind'] })}>
+                      <option value="BOTH">Both</option>
+                      <option value="PAYMENT">Payments only</option>
+                      <option value="RECEIPT">Receipts only</option>
+                    </select>
+                  ) : <span style={{ fontSize: 12 }}>{m.kind}</span>}
+                </td>
+                <td style={S.td}>
+                  {canWrite ? (
+                    <input type="checkbox" checked={m.isActive} onChange={e => update(m.id, { isActive: e.target.checked })} />
+                  ) : (m.isActive ? '✓' : '—')}
+                </td>
+                <td style={S.td}>
+                  {canWrite ? (
+                    <input type="number" value={m.sortOrder} onChange={e => update(m.id, { sortOrder: parseInt(e.target.value) || 0 })} style={{ ...S.input, width: 60, padding: '2px 6px', fontSize: 12, marginBottom: 0 }} />
+                  ) : m.sortOrder}
+                </td>
+                <td style={{ ...S.td, textAlign: 'right' }}>
+                  {canWrite && <button style={{ ...S.textBtn, color: '#dc2626' }} onClick={() => remove(m.id, m.name)}>Delete</button>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   )
