@@ -93,7 +93,7 @@ export async function trialBalance(entityId: string, range: DateRange = {}) {
       const net = b.balance
       const debit = net >= 0 ? (isDebitNormal(b.type) ? net : 0) : (isDebitNormal(b.type) ? 0 : -net)
       const credit = net >= 0 ? (isDebitNormal(b.type) ? 0 : net) : (isDebitNormal(b.type) ? -net : 0)
-      return { code: b.code, name: b.name, type: b.type, debit, credit }
+      return { accountId: b.accountId, code: b.code, name: b.name, type: b.type, debit, credit }
     })
 
   const totalDebit = rows.reduce((s, r) => s + r.debit, 0)

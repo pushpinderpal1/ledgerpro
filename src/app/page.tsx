@@ -384,43 +384,174 @@ function AuthScreen({ authPage, setAuthPage, onAuth }: {
 }
 
 // ─── Dashboard ────────────────────────────────────────────────────────────────
+// ─── Dashboard with KPIs ──────────────────────────────────────────────────────
+interface DashboardKpis {
+  cashBalance: number
+  cashAccountCount: number
+  thisMonth: { revenue: number; expense: number; cogs: number; netIncome: number; from: string; to: string }
+  ytd:       { revenue: number; expense: number; cogs: number; netIncome: number; from: string; to: string }
+  apOpen: number
+  apOverdue: number
+  apOverdueCount: number
+  topExpenses: { accountId: string; code: string; name: string; amount: number }[]
+  trend: { month: string; label: string; revenue: number; expense: number; netIncome: number }[]
+  asOf: string
+}
+
 function DashboardPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => void }) {
   const { currentEntity } = useApp()
-  const [data, setData] = useState<{ accounts?: Account[]; apSummary?: { total: number; overdueCount: number; overdue30: number } }>({})
+  const [kpis, setKpis] = useState<DashboardKpis | null>(null)
+  const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     if (!currentEntity) return
-    Promise.all([
-      fetch(`/api/accounts?entityId=${currentEntity.id}`).then(r => r.json()),
-      fetch(`/api/ap?entityId=${currentEntity.id}`).then(r => r.json()),
-    ]).then(([accts, ap]) => setData({ accounts: accts, apSummary: ap.summary }))
-  }, [currentEntity])
+    setLoading(true)
+    fetch(`/api/dashboard?entityId=${currentEntity.id}`)
+      .then(r => r.json())
+      .then(d => { if (d.error) showToast(d.error, 'err'); else setKpis(d) })
+      .finally(() => setLoading(false))
+  }, [currentEntity, showToast])
 
-  const totalAssets    = data.accounts?.filter(a => a.type === 'ASSET').length ?? 0
-  const totalAccounts  = data.accounts?.length ?? 0
+  if (loading) return <div style={{ padding: 40, textAlign: 'center', color: '#94a3b8' }}>Loading dashboard…</div>
+  if (!kpis) return <div style={{ padding: 40, textAlign: 'center', color: '#94a3b8' }}>No data yet — post some journal entries to populate</div>
+
+  const niPositive = kpis.thisMonth.netIncome >= 0
+  const ytdPositive = kpis.ytd.netIncome >= 0
+
+  // KPI cards (4 wide)
+  const cards = [
+    {
+      label: 'Cash on hand',
+      value: `$${fmt(kpis.cashBalance)}`,
+      sub: `${kpis.cashAccountCount} bank account${kpis.cashAccountCount === 1 ? '' : 's'}`,
+      color: kpis.cashBalance >= 0 ? '#0891b2' : '#dc2626',
+    },
+    {
+      label: 'Net income — this month',
+      value: `$${fmt(kpis.thisMonth.netIncome)}`,
+      sub: `Revenue $${fmt(kpis.thisMonth.revenue)} − Exp $${fmt(kpis.thisMonth.expense + kpis.thisMonth.cogs)}`,
+      color: niPositive ? '#16a34a' : '#dc2626',
+    },
+    {
+      label: 'Net income — YTD',
+      value: `$${fmt(kpis.ytd.netIncome)}`,
+      sub: `Revenue $${fmt(kpis.ytd.revenue)} − Exp $${fmt(kpis.ytd.expense + kpis.ytd.cogs)}`,
+      color: ytdPositive ? '#16a34a' : '#dc2626',
+    },
+    {
+      label: 'AP outstanding',
+      value: `$${fmt(kpis.apOpen)}`,
+      sub: kpis.apOverdueCount > 0 ? `${kpis.apOverdueCount} overdue ($${fmt(kpis.apOverdue)})` : 'No overdue',
+      color: kpis.apOverdueCount > 0 ? '#dc2626' : '#7c3aed',
+    },
+  ]
+
+  // Trend chart sizing
+  const trendMax = Math.max(...kpis.trend.flatMap(t => [t.revenue, t.expense]), 1)
+  const chartW = 600, chartH = 160, padL = 40, padR = 10, padT = 20, padB = 30
+  const barAreaW = chartW - padL - padR
+  const barGroupW = barAreaW / kpis.trend.length
+  const barW = (barGroupW - 8) / 2
 
   return (
     <div>
+      {/* KPI cards */}
       <div style={S.kpiGrid}>
-        {[
-          { label: 'Total accounts', value: totalAccounts, sub: 'in chart of accounts', color: '#7c3aed' },
-          { label: 'AP outstanding', value: `$${fmt(data.apSummary?.total ?? 0)}`, sub: `${data.apSummary?.overdueCount ?? 0} overdue`, color: '#dc2626' },
-          { label: 'Asset accounts', value: totalAssets, sub: 'active asset accounts', color: '#0891b2' },
-          { label: 'AP overdue (30d)', value: `$${fmt(data.apSummary?.overdue30 ?? 0)}`, sub: 'needs attention', color: '#d97706' },
-        ].map(k => (
+        {cards.map(k => (
           <div key={k.label} style={S.kpiCard}>
             <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 4 }}>{k.label}</div>
-            <div style={{ fontSize: 26, fontWeight: 700, color: k.color }}>{k.value}</div>
+            <div style={{ fontSize: 26, fontWeight: 700, color: k.color, fontFamily: 'monospace' }}>{k.value}</div>
             <div style={{ fontSize: 11, color: '#64748b', marginTop: 3 }}>{k.sub}</div>
           </div>
         ))}
       </div>
+
+      {/* Trend chart + Top expenses */}
+      <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 16, marginTop: 16 }}>
+        <div style={S.card}>
+          <div style={S.cardHeader}>Revenue vs Expense — last 6 months</div>
+          <svg viewBox={`0 0 ${chartW} ${chartH}`} style={{ width: '100%', height: 'auto' }}>
+            {/* Y axis grid lines */}
+            {[0, 0.25, 0.5, 0.75, 1].map((p, i) => {
+              const y = padT + (chartH - padT - padB) * (1 - p)
+              return (
+                <g key={i}>
+                  <line x1={padL} y1={y} x2={chartW - padR} y2={y} stroke="#e2e8f0" strokeWidth={0.5} />
+                  <text x={padL - 4} y={y + 3} fontSize={9} fill="#94a3b8" textAnchor="end">
+                    {p === 0 ? '0' : `$${fmtCompact(trendMax * p)}`}
+                  </text>
+                </g>
+              )
+            })}
+            {/* Bars */}
+            {kpis.trend.map((t, i) => {
+              const x0 = padL + i * barGroupW + 4
+              const revH = (t.revenue / trendMax) * (chartH - padT - padB)
+              const expH = (t.expense / trendMax) * (chartH - padT - padB)
+              return (
+                <g key={t.month}>
+                  <rect x={x0} y={chartH - padB - revH} width={barW} height={revH} fill="#16a34a" rx={2} />
+                  <rect x={x0 + barW + 2} y={chartH - padB - expH} width={barW} height={expH} fill="#dc2626" rx={2} />
+                  <text x={x0 + barW + 1} y={chartH - padB + 14} fontSize={10} fill="#475569" textAnchor="middle">{t.label}</text>
+                </g>
+              )
+            })}
+            {/* Legend */}
+            <g transform={`translate(${chartW - padR - 130}, 5)`}>
+              <rect width={10} height={10} fill="#16a34a" rx={2} />
+              <text x={14} y={9} fontSize={10} fill="#475569">Revenue</text>
+              <rect x={70} width={10} height={10} fill="#dc2626" rx={2} />
+              <text x={84} y={9} fontSize={10} fill="#475569">Expense</text>
+            </g>
+          </svg>
+        </div>
+        <div style={S.card}>
+          <div style={S.cardHeader}>Top expenses — this month</div>
+          {kpis.topExpenses.length === 0 ? (
+            <div style={{ padding: 20, color: '#94a3b8', fontSize: 13, textAlign: 'center' }}>No expenses yet this month</div>
+          ) : (
+            <table style={S.table}>
+              <tbody>
+                {kpis.topExpenses.map(e => {
+                  const max = kpis.topExpenses[0].amount
+                  const pct = (e.amount / max) * 100
+                  return (
+                    <tr key={e.accountId}>
+                      <td style={{ ...S.td, padding: '8px 6px' }}>
+                        <div style={{ fontSize: 12, fontWeight: 500 }}>{e.code} — {e.name}</div>
+                        <div style={{ background: '#fee2e2', borderRadius: 2, height: 4, marginTop: 4, position: 'relative' }}>
+                          <div style={{ background: '#dc2626', borderRadius: 2, height: 4, width: `${pct}%` }} />
+                        </div>
+                      </td>
+                      <td style={{ ...S.td, textAlign: 'right', fontFamily: 'monospace', fontSize: 12, fontWeight: 600 }}>${fmt(e.amount)}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+
+      {/* Bottom row: account summary + recent AP */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginTop: 16 }}>
         <AccountsWidget />
         <ApWidget />
       </div>
+
+      <div style={{ marginTop: 16, fontSize: 11, color: '#94a3b8', textAlign: 'right' }}>
+        As of {new Date(kpis.asOf).toLocaleString()}
+      </div>
     </div>
   )
+}
+
+// Compact formatter for chart axis labels ($1.2K, $3.5M, etc.)
+function fmtCompact(n: number): string {
+  const abs = Math.abs(n)
+  if (abs >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M'
+  if (abs >= 1_000) return (n / 1_000).toFixed(1) + 'K'
+  return n.toFixed(0)
 }
 
 function AccountsWidget() {
@@ -2855,6 +2986,12 @@ function ReportViewer({ def, showToast, onBack }: { def: ReportDef; showToast: (
   const [asOf, setAsOf] = useState(new Date().toISOString().slice(0, 10))
   const [data, setData] = useState<unknown>(null)
   const [loading, setLoading] = useState(false)
+  const [drill, setDrill] = useState<{ accountId: string; range?: { from: string; to: string }; asOf?: string } | null>(null)
+
+  const handleDrill = (accountId: string, range: { from?: string; to?: string }) => {
+    if (def.needsAsOf) setDrill({ accountId, asOf })
+    else if (range.from && range.to) setDrill({ accountId, range: { from: range.from, to: range.to } })
+  }
 
   const setPresetAndDates = (p: RangePresetId) => {
     setPreset(p)
@@ -2959,21 +3096,35 @@ function ReportViewer({ def, showToast, onBack }: { def: ReportDef; showToast: (
         </div>
 
         {loading && <div style={{ textAlign: 'center', padding: 60, color: '#94a3b8' }}>Generating report…</div>}
-        {!loading && data && <ReportBody def={def} data={data} />}
+        {!loading && data && <ReportBody def={def} data={data} onDrill={handleDrill} dateContext={{ from, to, asOf }} />}
         {!loading && !data && <div style={{ textAlign: 'center', padding: 60, color: '#94a3b8' }}>No data</div>}
       </div>
+      {drill && (
+        <DrillDownModal
+          accountId={drill.accountId}
+          range={drill.range}
+          asOf={drill.asOf}
+          onClose={() => setDrill(null)}
+        />
+      )}
     </div>
   )
 }
 
 // ─── Renderers per report type ────────────────────────────────────────────────
-function ReportBody({ def, data }: { def: ReportDef; data: unknown }) {
+function ReportBody({ def, data, onDrill, dateContext }: {
+  def: ReportDef
+  data: unknown
+  onDrill?: (accountId: string, range: { from?: string; to?: string }) => void
+  dateContext?: { from: string; to: string; asOf: string }
+}) {
+  const range = dateContext ? { from: dateContext.from, to: dateContext.to } : undefined
   switch (def.id) {
     case 'pnl':                return <PnlReport data={data as PnlData} />
     case 'pnl-comparison':     return <PnlComparisonReport data={data as PnlComparisonData} />
     case 'balance-sheet':      return <BalanceSheetReport data={data as BsData} />
     case 'cash-flows':         return <CashFlowsReport data={data as CashFlowsData} />
-    case 'trial-balance':      return <TrialBalanceReport data={data as TrialBalanceData} />
+    case 'trial-balance':      return <TrialBalanceReport data={data as TrialBalanceData} onDrill={onDrill} range={range} />
     case 'general-ledger':     return <GeneralLedgerReport data={data as GlData} />
     case 'journal':            return <JournalReportView data={data as JournalData} />
     case 'ap-aging':           return <ApAgingReport data={data as ApAgingData} />
@@ -3003,8 +3154,9 @@ interface CashFlowsData {
   netCashChange: number; cashAtStart: number; cashAtEnd: number
 }
 interface TrialBalanceData {
-  rows: { code: string; name: string; type: string; debit: number; credit: number }[]
+  rows: { accountId: string; code: string; name: string; type: string; debit: number; credit: number }[]
   totalDebit: number; totalCredit: number; balanced: boolean
+  range: { from?: string | Date; to?: string | Date }
 }
 interface GlData {
   accounts: {
@@ -3174,7 +3326,7 @@ function CashFlowsReport({ data }: { data: CashFlowsData }) {
   )
 }
 
-function TrialBalanceReport({ data }: { data: TrialBalanceData }) {
+function TrialBalanceReport({ data, onDrill, range }: { data: TrialBalanceData; onDrill?: (accountId: string, range: { from?: string; to?: string }) => void; range?: { from: string; to: string } }) {
   return (
     <table style={{ width: '100%', borderCollapse: 'collapse' }}>
       <thead><tr>
@@ -3183,13 +3335,25 @@ function TrialBalanceReport({ data }: { data: TrialBalanceData }) {
         <th style={{ ...reportTableHeader, textAlign: 'right' }}>Credit</th>
       </tr></thead>
       <tbody>
-        {data.rows.map(r => (
-          <tr key={r.code}>
-            <td style={reportTableCell}>{r.code} — {r.name}</td>
-            <td style={{ ...reportTableCell, textAlign: 'right' }}>{r.debit > 0 ? `$${fmt(r.debit)}` : ''}</td>
-            <td style={{ ...reportTableCell, textAlign: 'right' }}>{r.credit > 0 ? `$${fmt(r.credit)}` : ''}</td>
-          </tr>
-        ))}
+        {data.rows.map(r => {
+          const drillable = !!onDrill && (r.debit > 0 || r.credit > 0)
+          return (
+            <tr
+              key={r.accountId ?? r.code}
+              style={drillable ? { cursor: 'pointer' } : undefined}
+              onMouseEnter={drillable ? (e) => (e.currentTarget.style.background = '#f8fafc') : undefined}
+              onMouseLeave={drillable ? (e) => (e.currentTarget.style.background = '') : undefined}
+              onClick={drillable && onDrill && range ? () => onDrill(r.accountId, range) : undefined}
+            >
+              <td style={reportTableCell}>
+                {r.code} — {r.name}
+                {drillable && <span style={{ marginLeft: 6, fontSize: 10, color: '#0ea5e9' }}>›</span>}
+              </td>
+              <td style={{ ...reportTableCell, textAlign: 'right' }}>{r.debit > 0 ? `$${fmt(r.debit)}` : ''}</td>
+              <td style={{ ...reportTableCell, textAlign: 'right' }}>{r.credit > 0 ? `$${fmt(r.credit)}` : ''}</td>
+            </tr>
+          )
+        })}
         <tr>
           <td style={reportGrandTotal}>Total</td>
           <td style={{ ...reportGrandTotal, textAlign: 'right' }}>${fmt(data.totalDebit)}</td>
@@ -3198,6 +3362,130 @@ function TrialBalanceReport({ data }: { data: TrialBalanceData }) {
         {!data.balanced && <tr><td colSpan={3} style={{ padding: 12, color: '#dc2626', fontSize: 12, textAlign: 'center', background: '#fef2f2' }}>⚠ Trial balance does not tie — investigate before relying on this report</td></tr>}
       </tbody>
     </table>
+  )
+}
+
+// ─── Drill-down modal ─────────────────────────────────────────────────────────
+interface DrillLine {
+  id: string
+  date: string
+  ref: string
+  entryId: string
+  entryDescription: string | null
+  entryStatus: string
+  lineDescription: string | null
+  debit: number
+  credit: number
+  runningBalance: number
+}
+interface DrillResp {
+  account: { id: string; code: string; name: string; type: string; subType: string | null }
+  openingBalance: number
+  closingBalance: number
+  totalDebit: number
+  totalCredit: number
+  lineCount: number
+  lines: DrillLine[]
+}
+
+function DrillDownModal({
+  accountId, range, asOf, onClose,
+}: {
+  accountId: string
+  range?: { from: string; to: string }
+  asOf?: string
+  onClose: () => void
+}) {
+  const { currentEntity } = useApp()
+  const [data, setData] = useState<DrillResp | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    if (!currentEntity) return
+    setLoading(true)
+    const sp = new URLSearchParams({ entityId: currentEntity.id, accountId })
+    if (asOf) sp.set('asOf', asOf)
+    else if (range) { sp.set('from', range.from); sp.set('to', range.to) }
+    fetch(`/api/reports/drilldown?${sp}`)
+      .then(r => r.json())
+      .then(d => { if (!d.error) setData(d) })
+      .finally(() => setLoading(false))
+  }, [currentEntity, accountId, range, asOf])
+
+  return (
+    <div
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.5)',
+        display: 'flex', alignItems: 'flex-start', justifyContent: 'center',
+        zIndex: 1000, padding: '40px 20px', overflowY: 'auto',
+      }}
+      onClick={onClose}
+    >
+      <div
+        style={{
+          background: '#fff', borderRadius: 8, width: '100%', maxWidth: 900,
+          padding: 24, boxShadow: '0 20px 50px rgba(15,23,42,0.3)',
+        }}
+        onClick={e => e.stopPropagation()}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+          <div>
+            <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.06 }}>Drill-down</div>
+            {data && <div style={{ fontSize: 18, fontWeight: 700 }}>{data.account.code} — {data.account.name}</div>}
+          </div>
+          <button onClick={onClose} style={{ ...S.btn, padding: '4px 12px' }}>✕</button>
+        </div>
+
+        {loading && <div style={{ padding: 40, textAlign: 'center', color: '#94a3b8' }}>Loading…</div>}
+        {!loading && data && (
+          <>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
+              <div style={{ padding: 10, background: '#f8fafc', borderRadius: 6 }}>
+                <div style={{ fontSize: 10, color: '#94a3b8', textTransform: 'uppercase' }}>Opening</div>
+                <div style={{ fontFamily: 'monospace', fontWeight: 700, fontSize: 14 }}>${fmt(data.openingBalance)}</div>
+              </div>
+              <div style={{ padding: 10, background: '#fef2f2', borderRadius: 6 }}>
+                <div style={{ fontSize: 10, color: '#94a3b8', textTransform: 'uppercase' }}>Total debits</div>
+                <div style={{ fontFamily: 'monospace', fontWeight: 700, fontSize: 14, color: '#dc2626' }}>${fmt(data.totalDebit)}</div>
+              </div>
+              <div style={{ padding: 10, background: '#f0fdf4', borderRadius: 6 }}>
+                <div style={{ fontSize: 10, color: '#94a3b8', textTransform: 'uppercase' }}>Total credits</div>
+                <div style={{ fontFamily: 'monospace', fontWeight: 700, fontSize: 14, color: '#16a34a' }}>${fmt(data.totalCredit)}</div>
+              </div>
+              <div style={{ padding: 10, background: '#eff6ff', borderRadius: 6 }}>
+                <div style={{ fontSize: 10, color: '#94a3b8', textTransform: 'uppercase' }}>Closing</div>
+                <div style={{ fontFamily: 'monospace', fontWeight: 700, fontSize: 14, color: '#1d4ed8' }}>${fmt(data.closingBalance)}</div>
+              </div>
+            </div>
+
+            <div style={{ maxHeight: 480, overflowY: 'auto', border: '1px solid #e2e8f0', borderRadius: 6 }}>
+              <table style={S.table}>
+                <thead style={{ position: 'sticky', top: 0, background: '#fff' }}>
+                  <tr>{['Date','Ref','Description','Memo','Debit','Credit','Balance'].map(h => <th key={h} style={S.th}>{h}</th>)}</tr>
+                </thead>
+                <tbody>
+                  {data.lines.length === 0 && <tr><td colSpan={7} style={{ ...S.td, textAlign: 'center', color: '#94a3b8' }}>No journal lines in this period</td></tr>}
+                  {data.lines.map(l => (
+                    <tr key={l.id}>
+                      <td style={{ ...S.td, fontSize: 11 }}>{fmtDate(l.date)}</td>
+                      <td style={{ ...S.td, fontFamily: 'monospace', fontSize: 11 }}>{l.ref}</td>
+                      <td style={{ ...S.td, fontSize: 12 }}>{l.entryDescription ?? '—'}</td>
+                      <td style={{ ...S.td, fontSize: 11, color: '#64748b' }}>{l.lineDescription ?? '—'}</td>
+                      <td style={{ ...S.td, textAlign: 'right', fontFamily: 'monospace', color: '#dc2626' }}>{l.debit > 0 ? `$${fmt(l.debit)}` : ''}</td>
+                      <td style={{ ...S.td, textAlign: 'right', fontFamily: 'monospace', color: '#16a34a' }}>{l.credit > 0 ? `$${fmt(l.credit)}` : ''}</td>
+                      <td style={{ ...S.td, textAlign: 'right', fontFamily: 'monospace', fontWeight: 600 }}>${fmt(l.runningBalance)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div style={{ marginTop: 12, fontSize: 11, color: '#64748b' }}>
+              Showing {data.lineCount} line{data.lineCount === 1 ? '' : 's'}. Click outside or ✕ to close.
+            </div>
+          </>
+        )}
+      </div>
+    </div>
   )
 }
 
