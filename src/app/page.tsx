@@ -2635,7 +2635,20 @@ interface ReconLine {
 }
 interface StatementLine { id: string; date: string; description: string; amount: number; reference?: string; isMatched: boolean }
 interface ReconRecord { id: string; statementDate: string; beginningBalance: number; endingBalance: number; status: 'IN_PROGRESS'|'COMPLETED'; bankAccount?: { code: string; name: string } }
-interface ReconState { reconciliation: { id: string; statementDate: string; bankAccountId: string; status: string }; cleared: ReconLine[]; uncleared: ReconLine[]; statementLines: StatementLine[]; summary: ReconSummary }
+interface ReconDiagnostics {
+  totalLinesOnAccount: number
+  linesAfterStatementDate: number
+  totalBankAccounts: number
+  recentLinesOnAccount: Array<{ date: string; ref: string; description: string | null; debit: number; credit: number }>
+}
+interface ReconState {
+  reconciliation: { id: string; statementDate: string; bankAccountId: string; status: string; bankAccount?: { id: string; code: string; name: string } }
+  cleared: ReconLine[]
+  uncleared: ReconLine[]
+  statementLines: StatementLine[]
+  summary: ReconSummary
+  diagnostics?: ReconDiagnostics
+}
 
 function ReconPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => void }) {
   const { currentEntity, role } = useApp()
@@ -2744,6 +2757,24 @@ function ReconPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => vo
           </div>
         </div>
 
+        {/* Bank account + statement date — prominently displayed so the user
+            can spot a mismatch with their payment immediately. */}
+        <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: 12, marginBottom: 16, display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
+          <div>
+            <div style={{ fontSize: 10, color: '#1e40af', textTransform: 'uppercase', letterSpacing: 0.06 }}>Reconciling</div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: '#1e3a8a' }}>
+              {state.reconciliation.bankAccount ? `${state.reconciliation.bankAccount.code} — ${state.reconciliation.bankAccount.name}` : 'Bank account'}
+            </div>
+          </div>
+          <div>
+            <div style={{ fontSize: 10, color: '#1e40af', textTransform: 'uppercase', letterSpacing: 0.06 }}>Statement date</div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: '#1e3a8a' }}>{fmtDate(state.reconciliation.statementDate)}</div>
+          </div>
+          <div style={{ marginLeft: 'auto', fontSize: 12, color: '#1e40af' }}>
+            Transactions included: posted journal lines on this account, on or before this date
+          </div>
+        </div>
+
         <div style={S.kpiGrid}>
           {[
             { label:'Beginning balance', value:`$${fmt(summary.beginningBalance)}`, color:'#475569' },
@@ -2776,7 +2807,11 @@ function ReconPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => vo
           <table style={S.table}>
             <thead><tr>{['','Date','Ref','Description','Withdrawal','Deposit','Clearing date'].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
             <tbody>
-              {allLines.length === 0 && <tr><td style={{ ...S.td, textAlign:'center', color:'#94a3b8' }} colSpan={7}>No book transactions in this period</td></tr>}
+              {allLines.length === 0 && (
+                <tr><td colSpan={7} style={{ padding: 24, background: '#fff' }}>
+                  <ReconEmptyState diagnostics={state.diagnostics} statementDate={state.reconciliation.statementDate} />
+                </td></tr>
+              )}
               {allLines.map(l => {
                 const isCleared = l.inThisRecon && l.clearedStatus !== 'UNCLEARED'
                 return (
@@ -2875,6 +2910,78 @@ interface PeriodLock {
   reason: string | null
   releasedAt: string | null
   releasedBy: string | null
+}
+
+// ─── Diagnostic empty state for bank rec ─────────────────────────────────────
+function ReconEmptyState({ diagnostics, statementDate }: {
+  diagnostics?: ReconDiagnostics
+  statementDate: string
+}) {
+  if (!diagnostics) {
+    return (
+      <div style={{ textAlign: 'center', padding: 30, color: '#94a3b8', fontSize: 13 }}>
+        No book transactions in this period
+      </div>
+    )
+  }
+  const { totalLinesOnAccount, linesAfterStatementDate, totalBankAccounts, recentLinesOnAccount } = diagnostics
+  const sdStr = fmtDate(statementDate)
+
+  return (
+    <div style={{ padding: 20, background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8 }}>
+      <div style={{ fontSize: 14, fontWeight: 700, color: '#92400e', marginBottom: 8 }}>
+        No transactions found in this period
+      </div>
+
+      {totalLinesOnAccount === 0 ? (
+        <div style={{ fontSize: 13, color: '#78350f', lineHeight: 1.6 }}>
+          <p style={{ margin: '0 0 8px' }}>
+            <strong>This bank account has no posted journal lines at all.</strong> Common causes:
+          </p>
+          <ul style={{ margin: '0 0 8px', paddingLeft: 20 }}>
+            <li>The payment was recorded against a <em>different</em> bank account
+              {totalBankAccounts > 1 && <> — you have <strong>{totalBankAccounts}</strong> accounts flagged as bank accounts; check which one you used in the Pay modal</>}.
+            </li>
+            <li>The payment was created but the journal entry didn't post successfully (check the Journal Entries page).</li>
+            <li>You opened this reconciliation page after starting a recon but the payment was never made.</li>
+          </ul>
+          <p style={{ margin: '0' }}>Try checking the AP Tracker — the paid invoice should show status PAID with a $0 balance.</p>
+        </div>
+      ) : (
+        <div style={{ fontSize: 13, color: '#78350f', lineHeight: 1.6 }}>
+          <p style={{ margin: '0 0 8px' }}>
+            This bank account has <strong>{totalLinesOnAccount}</strong> total posted journal line{totalLinesOnAccount === 1 ? '' : 's'},
+            but none on or before your statement date of <strong>{sdStr}</strong>.
+          </p>
+          {linesAfterStatementDate > 0 && (
+            <p style={{ margin: '0 0 8px' }}>
+              <strong>{linesAfterStatementDate}</strong> line{linesAfterStatementDate === 1 ? ' is' : 's are'} dated <em>after</em> your statement date.
+              Increase the statement date to include them, or go back and start a new reconciliation with a later date.
+            </p>
+          )}
+          {recentLinesOnAccount.length > 0 && (
+            <div style={{ marginTop: 10, padding: 10, background: '#fff', borderRadius: 6, fontSize: 12 }}>
+              <div style={{ fontWeight: 600, color: '#78350f', marginBottom: 6 }}>Most recent lines on this account:</div>
+              <table style={{ width: '100%', fontSize: 12 }}>
+                <tbody>
+                  {recentLinesOnAccount.map((l, i) => (
+                    <tr key={i}>
+                      <td style={{ padding: '2px 6px', color: '#475569' }}>{fmtDate(l.date)}</td>
+                      <td style={{ padding: '2px 6px', fontFamily: 'monospace', fontSize: 11 }}>{l.ref}</td>
+                      <td style={{ padding: '2px 6px', color: '#1e293b' }}>{l.description ?? '—'}</td>
+                      <td style={{ padding: '2px 6px', textAlign: 'right', fontFamily: 'monospace', color: l.debit > 0 ? '#16a34a' : '#dc2626' }}>
+                        {l.debit > 0 ? `+$${fmt(l.debit)}` : `−$${fmt(l.credit)}`}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
 }
 
 function PeriodsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => void }) {

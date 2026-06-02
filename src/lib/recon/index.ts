@@ -172,6 +172,7 @@ export async function setLineCleared(input: {
 export async function getReconciliationState(reconciliationId: string, entityId: string) {
   const recon = await db.bankReconciliation.findFirst({
     where: { id: reconciliationId, entityId },
+    include: { bankAccount: { select: { id: true, code: true, name: true } } },
   })
   if (!recon) throw new Error('Reconciliation not found')
 
@@ -216,6 +217,32 @@ export async function getReconciliationState(reconciliationId: string, entityId:
     orderBy: { date: 'asc' },
   })
 
+  // Diagnostics — help users figure out why an expected transaction isn't
+  // showing. Cheap counts that explain the empty state.
+  const [totalLinesOnAccount, linesAfterStatementDate, totalBankAccounts] = await Promise.all([
+    db.journalLine.count({
+      where: { accountId: recon.bankAccountId, entry: { entityId, status: 'POSTED' } },
+    }),
+    db.journalLine.count({
+      where: {
+        accountId: recon.bankAccountId,
+        entry: { entityId, status: 'POSTED', date: { gt: recon.statementDate } },
+      },
+    }),
+    db.account.count({
+      where: { entityId, isBankAccount: true, isActive: true },
+    }),
+  ])
+
+  // Latest 3 bank lines on the account (regardless of clearing status) — quick
+  // sanity check whether the user's most recent payment landed on this account.
+  const recentLinesOnAccount = await db.journalLine.findMany({
+    where: { accountId: recon.bankAccountId, entry: { entityId, status: 'POSTED' } },
+    include: { entry: { select: { ref: true, date: true, description: true } } },
+    orderBy: { entry: { date: 'desc' } },
+    take: 3,
+  })
+
   return {
     reconciliation: recon,
     cleared,
@@ -229,6 +256,18 @@ export async function getReconciliationState(reconciliationId: string, entityId:
       unclearedCount: uncleared.length,
       difference: fromCents(differenceCents),
       isBalanced: differenceCents === 0,
+    },
+    diagnostics: {
+      totalLinesOnAccount,
+      linesAfterStatementDate,
+      totalBankAccounts,
+      recentLinesOnAccount: recentLinesOnAccount.map(l => ({
+        date: l.entry.date,
+        ref: l.entry.ref,
+        description: l.description || l.entry.description,
+        debit: fromCents(toCents(l.debit)),
+        credit: fromCents(toCents(l.credit)),
+      })),
     },
   }
 }

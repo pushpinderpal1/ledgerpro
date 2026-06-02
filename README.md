@@ -1,107 +1,129 @@
-# LedgerPro — Hotfix: AP Pay button
+# LedgerPro — Bank Rec diagnostic improvements
 
-## What was broken
+## Why this bundle exists
 
-Two bugs in the AP module:
+You paid a cheque via the AP Tracker and expected it to appear in Bank
+Reconciliation, but it didn't show. The recon library logic is actually
+correct — it queries all posted journal lines on the bank account up to the
+statement date — so if the cheque isn't appearing, one of these is true:
 
-1. **Pay button had no `onClick` handler** — it was literally a decorative
-   button. Clicking did nothing.
-2. **The `recordPayment` helper in `src/app/api/ap/route.ts` was an
-   orphan exported function**, not connected to any HTTP method. Even if
-   the button had a click handler, there was no endpoint to call.
-   The old helper also didn't post a journal entry — paying an AP invoice
-   should move cash off the books (DR AP / CR Bank).
+1. **The cheque was paid from a different bank account** than the one
+   selected for the reconciliation
+2. **The statement date is before the cheque date** (so the cheque is
+   correctly excluded from this period)
+3. **The cheque payment didn't post a journal entry** (something went
+   wrong with my AP Pay fix on your data)
 
-## What this fixes
+The previous UI just showed "No book transactions in this period" with
+no information to help you figure out which. This bundle replaces that
+with an actionable diagnostic empty state.
+
+## What this changes
 
 Two files. No schema change, no migration, no new deps.
 
-### `src/app/api/ap/route.ts` (replaces existing)
+### `src/lib/recon/index.ts`
 
-- Removes the orphan `recordPayment` helper
-- Adds a proper `PATCH` handler on `/api/ap` that:
-  - Validates: invoice exists, not VOID, not already PAID, amount ≤ outstanding balance
-  - Validates: selected bank account exists, is active, and has `isBankAccount = true`
-  - Validates: AP control account (code "2000") exists in the entity
-  - Creates `ApPayment` record + balanced `JournalEntry` + updates `ApInvoice` (amountPaid + status + paidAt), all in one transaction
-  - Returns `{ success, payment, journalRef, invoice }` on success
-- JE format: ref `APP-YYYY-NNNN`, source "AP", status POSTED
-  - DR Accounts Payable (2000)
-  - CR Selected bank account
+Extends `getReconciliationState()` to return a `diagnostics` field:
 
-### `src/app/page.tsx` (replaces existing)
+```ts
+diagnostics: {
+  totalLinesOnAccount       // # posted lines on this bank account, ANY date
+  linesAfterStatementDate   // # posted lines dated > statement date
+  totalBankAccounts         // # accounts in entity flagged isBankAccount
+  recentLinesOnAccount      // most recent 3 lines on this account
+}
+```
 
-- Wires the Pay button: `onClick={() => setPayingInvoice(inv)}`
-- Hides the Pay button when invoice status is `PAID` or `VOID`
-- Adds `PayInvoiceModal` component (mounted at bottom of ApPage):
-  - Amount input pre-filled with outstanding balance
-  - Payment date picker
-  - Method dropdown: ACH / Cheque / Wire / Cash / Other
-  - Bank account picker (filtered to `isBankAccount = true` accounts)
-  - Reference / cheque number input
-  - Live preview of the journal entry that will be posted
-  - Submit button shows the amount being paid
-  - Click-outside-to-dismiss + ✕ close button
-- Shows a clear error in the modal if no bank accounts are flagged as such,
-  with instructions to fix it in the Chart of Accounts.
+Also includes `bankAccount` (id, code, name) in the returned `reconciliation`
+object so the UI can display it prominently.
 
-## How it works after the fix
+### `src/app/page.tsx`
 
-1. AP Tracker → click **Pay** on a Pending invoice → modal opens
-2. Amount is pre-filled with the outstanding balance (you can pay partial)
-3. Pick method, bank account, optional reference (cheque # for cheque method)
-4. Click **Pay $X** → API:
-   - Inserts `ApPayment`
-   - Creates JE: DR 2000 / CR Bank Account
-   - Updates invoice: `amountPaid` increases, status flips to
-     `PARTIALLY_PAID` or `PAID` (if balance ≤ 0.5¢)
-5. Toast shows the journal ref (`APP-YYYY-NNNN`)
-6. Modal closes, AP list reloads, invoice shows updated status
+Two improvements to the recon detail view:
 
-## Prerequisites in your data
+**1. Blue banner at the top** showing exactly which bank account and statement
+date the recon is for:
 
-Before the modal can post a payment, the entity needs:
-- At least one account with code **"2000"** (AP control account) — same
-  convention used by the existing AP invoice posting and the new expense
-  request workflow
-- At least one account with **"Is bank account"** ticked (set this on the
-  account in Chart of Accounts → edit → tick the checkbox)
+```
+┌─────────────────────────────────────────────────────────┐
+│ RECONCILING        STATEMENT DATE                       │
+│ 1100 — Checking    Jun 2, 2026                          │
+└─────────────────────────────────────────────────────────┘
+```
 
-If either is missing, the modal returns a clear error explaining what to fix.
+This is the single most common diagnostic: "wait, did I pick the wrong
+account?"
+
+**2. The "No book transactions in this period" empty state is replaced**
+with an actionable diagnostic that explains why no transactions are showing:
+
+If there are **zero** journal lines on the account at all:
+
+> No transactions found in this period
+>
+> **This bank account has no posted journal lines at all.** Common causes:
+> - The payment was recorded against a different bank account — you have
+>   3 accounts flagged as bank accounts; check which one you used
+> - The payment was created but the journal entry didn't post successfully
+> - You opened this reconciliation page but the payment was never made
+
+If there **are** journal lines but they're outside the period:
+
+> This bank account has 5 total posted journal lines, but none on or
+> before your statement date of Jun 1, 2026.
+>
+> 2 lines are dated after your statement date. Increase the statement
+> date or start a new reconciliation with a later date.
+>
+> Most recent lines on this account:
+> Jun 2, 2026 | APP-2026-0001 | AP Payment: ABC Inc #1 (CHEQUE) | −$1,000.00
+> May 28, 2026 | JE-2026-0042 | Opening balance               | +$5,000.00
+
+## Most likely root cause for what you're seeing
+
+If your cheque payment succeeded (you saw a toast like "Payment recorded —
+journal APP-YYYY-NNNN"), the journal entry exists. So the most likely cause
+is either:
+
+- **You started the recon with a statement date earlier than today** — the
+  cheque is dated today (or whenever you paid it). Statement dates older
+  than that will exclude it. After deploy, the empty state will show
+  "X lines are dated after your statement date" to make this obvious.
+
+- **You started the recon on a different bank account** than the one you
+  paid from. After deploy, the blue banner at the top shows the bank
+  account name; cross-check with the AP Pay modal's bank dropdown.
+
+If neither of those is the issue, the new empty state will show "This bank
+account has no posted journal lines at all" — which means the JE didn't
+get created when you clicked Pay. In that case, screenshot it for me and
+also check the Journal Entries page for an entry with ref starting `APP-`.
 
 ## Deploy
 
 ```
 cd C:\ledgerpro
-# extract the zip, overwriting the two files
+# extract the zip
 git add -A
-git commit -m "Hotfix: wire AP Pay button to working payment endpoint with JE posting"
+git commit -m "Bank recon: prominent bank-account header + diagnostic empty state"
 git push
 ```
 
-After Railway redeploys, hard-refresh and:
-
-1. AP Tracker → click **Pay** on the ABC Inc invoice
-2. Modal opens with $1,000.00 pre-filled
-3. Pick a bank account, set method (e.g. ACH)
-4. Click **Pay $1,000.00**
-5. Toast shows the journal ref
-6. Row updates: balance $0, status PAID, no more Pay button on this row
-7. Reports → Trial Balance → AP balance decreased, bank account decreased
-8. Journal Entries → find the new `APP-YYYY-NNNN` entry
+After Railway redeploys, hard-refresh and open the empty reconciliation:
+you'll see either (a) the banner makes it obvious you picked the wrong
+account, (b) the new empty state explains the date mismatch, or (c) the
+empty state confirms the JE doesn't exist (in which case there's a real
+data bug for me to chase).
 
 ## Tests
 
-All 166 tests continue to pass. No new tests added — the payment logic
-lives inside the API route as DB-touching code, which the existing test
-suite doesn't try to mock (consistent with the rest of the codebase).
-The state machine and validations are simple enough that they don't need
-their own unit tests; correctness is verified by deploy + manual test.
+All 166 tests continue to pass. No new tests — the diagnostic logic is
+straightforward read-only DB queries that don't need their own coverage.
 
-## On me
+## What's not in this bundle
 
-I should have noticed the Pay button had no onClick handler when I built
-the AP module originally. Visual UI elements without handlers slip
-through type-checking because there's no semantic difference between a
-button with and without a click handler at the TypeScript level.
-Going forward I'll grep for orphan UI elements when reviewing modules.
+I deliberately did NOT modify the recon date filter or how journal lines
+are matched. The current logic — "posted JLs on this account where
+`entry.date <= statementDate`" — is the right one. The user just needs
+better visibility into what that query returned.
