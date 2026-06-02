@@ -82,6 +82,24 @@ export default function LedgerProApp() {
 
   const handleLogout = () => { setUser(null); setEntities([]); setCurrentEntityState(null) }
 
+  // Sidebar group collapse state — must be declared before any conditional
+  // return below to comply with the Rules of Hooks (hook order must be
+  // stable across renders).
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => {
+    try {
+      const raw = typeof window !== 'undefined' ? localStorage.getItem('ledgerpro:collapsedGroups') : null
+      return new Set<string>(raw ? JSON.parse(raw) : [])
+    } catch { return new Set<string>() }
+  })
+  const toggleGroup = (g: string) => {
+    setCollapsedGroups(prev => {
+      const next = new Set(prev)
+      if (next.has(g)) next.delete(g); else next.add(g)
+      try { localStorage.setItem('ledgerpro:collapsedGroups', JSON.stringify([...next])) } catch {}
+      return next
+    })
+  }
+
   if (!user) return (
     <AuthScreen authPage={authPage} setAuthPage={setAuthPage}
       onAuth={(u, ents) => { setUser(u); setEntities(ents); setCurrentEntityState(ents[0] ?? null) }} />
@@ -142,20 +160,6 @@ export default function LedgerProApp() {
   // Auto-expand state: each group is expanded by default, but the user
   // can collapse them. The group containing the current page is force-expanded.
   const groupForPage = navGroups.find(g => g.items.some(i => i.id === page))?.group
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => {
-    try {
-      const raw = typeof window !== 'undefined' ? localStorage.getItem('ledgerpro:collapsedGroups') : null
-      return new Set<string>(raw ? JSON.parse(raw) : [])
-    } catch { return new Set<string>() }
-  })
-  const toggleGroup = (g: string) => {
-    setCollapsedGroups(prev => {
-      const next = new Set(prev)
-      if (next.has(g)) next.delete(g); else next.add(g)
-      try { localStorage.setItem('ledgerpro:collapsedGroups', JSON.stringify([...next])) } catch {}
-      return next
-    })
-  }
 
   return (
     <AppCtx.Provider value={{ user, entities, currentEntity, setCurrentEntity, role }}>

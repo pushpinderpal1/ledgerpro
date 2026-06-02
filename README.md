@@ -1,90 +1,47 @@
-# LedgerPro — Sidebar reorganized into parent/child groups
+# LedgerPro — Hotfix: sidebar groups crash
 
-The flat 22-item sidebar is now organized into 8 collapsible groups plus
-Dashboard at the top. The groups follow standard accounting-software
-conventions (Books, Payables, Reports, etc.).
+## What was broken
 
-## What changes
+The sidebar-groups bundle introduced a Rules of Hooks violation. I placed
+the `useState` call for the `collapsedGroups` state **after** an early
+`if (!user) return ...` short-circuit, which means:
 
-One file: `src/app/page.tsx`. No schema change, no migration, no new deps.
+- On the first render (no user yet), React encountered 5 hooks
+- On the second render (after user loads), React encountered 6 hooks
+- React throws "Rendered more hooks than during the previous render"
+- The error surfaces in the browser as the generic "Application error:
+  a client-side exception has occurred" message
 
-## New structure
+This is a classic React mistake — hooks must always be called in the same
+order, every render. Conditional `return` statements before a hook are
+forbidden.
 
-```
-Dashboard                          (standalone, no group)
+## What this fixes
 
-BOOKS                              ▾  (click to collapse/expand)
-  ≡  Chart of Accounts
-  ✎  Journal Entries
-  🔒 Period Locks
-
-PAYABLES                           ▾
-  ◎  AP Tracker
-  📥 Expense Requests
-  ✓  Payments
-
-RECONCILIATIONS                    ▾
-  ↔  Bank Recon
-  ◐  Vendor Recon
-
-REPORTS                            ▾
-  ▤  Reports
-  📊 Custom Statements
-
-ASSETS & PAYROLL                   ▾
-  ⬚  Fixed Assets
-  ◷  Payroll
-  ◻  W-2 / 1040-K
-
-PLANNING & MIS                     ▾
-  ◈  Budget & MIS
-  ⊞  MIS / Departments
-
-SETUP                              ▾
-  ◇  Group Structure
-  ⇄  FX Rates
-  ⇄  QB IIF
-
-ADMIN                              ▾
-  ⊙  Audit Trail
-  ◉  User Management
-  ⚙  Settings
-```
-
-## Behavior
-
-- **Click a group header to collapse/expand** it. Collapsed state persists
-  across page loads (saved to `localStorage`).
-- **The group containing the active page is always expanded**, even if
-  you've collapsed it — so you never lose track of where you are.
-- **Items still filter by role**. Groups that end up empty for a given
-  role are hidden entirely (so AP_CLERK doesn't see "Admin" with nothing
-  in it).
-- **Sidebar-collapsed mode** (icon-only, when you click the logo): group
-  headers are hidden, items render as a flat list of icons — same as
-  before. Hover tooltips still work.
-- **Top bar page title** still resolves correctly when you navigate.
+One file: `src/app/page.tsx`. The `useState` and `toggleGroup` are moved
+to the top of the component, before any conditional return. No other
+changes — the grouped sidebar structure and behavior are identical to
+what I shipped previously.
 
 ## Deploy
 
 ```
 cd C:\ledgerpro
-git add -A && git commit -m "Sidebar: organize 22 items into 8 collapsible groups" && git push
+git add -A && git commit -m "Hotfix: move sidebar useState above conditional return" && git push
 ```
 
-After Railway deploys, hard-refresh — the sidebar should immediately look
-less cluttered. Click any group header to collapse/expand. Your collapse
-preferences persist per browser via localStorage.
+After Railway redeploys, hard-refresh. The grouped sidebar should now
+load correctly. You'll see Dashboard at top, followed by 8 collapsible
+groups (Books, Payables, Reconciliations, Reports, Assets & Payroll,
+Planning & MIS, Setup, Admin).
 
 ## Tests
 
 All 166 tests continue to pass.
 
-## What's NOT in this bundle
+## On me
 
-- **Drag-and-drop reordering** of items within groups
-- **Custom user-defined groups** — the groups are hard-coded
-- **Pinning favorites** to the top
-- **Search/filter** the menu
-
-All are easy follow-ups if needed.
+I should have caught this when I added the `useState`. The Rules of
+Hooks are unforgiving and the failure mode is unhelpful at the surface
+(generic "Application error"). Going forward I'll verify hook order
+when adding state to components with early returns.
