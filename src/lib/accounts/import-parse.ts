@@ -22,6 +22,7 @@ export interface ParsedAccountRow {
   parentCode?: string                 // for two-pass resolution
   parentName?: string                 // from "Parent:Child" IIF convention
   isBankAccount?: boolean
+  openingBalance?: number             // optional column; absent or 0 = no OB JE created
   rawSourceLine?: number              // 1-based line index for error reporting
   warnings: string[]
 }
@@ -77,22 +78,22 @@ export const QB_ACCOUNT_TYPE_MAP: Record<string, { type: LpAccountType; subType?
 // Header: Code, Name, Type, SubType, Description, Parent Code
 // All columns case-insensitive. Code and Name are required.
 
-export const CSV_TEMPLATE_HEADER = ['Code', 'Name', 'Type', 'SubType', 'Description', 'Parent Code']
+export const CSV_TEMPLATE_HEADER = ['Code', 'Name', 'Type', 'SubType', 'Description', 'Parent Code', 'Opening Balance']
 
 export const CSV_TEMPLATE_SAMPLE = [
   CSV_TEMPLATE_HEADER.join(','),
-  '1000,Cash - Operating,ASSET,Bank,Primary checking account,',
-  '1010,Cash - Petty,ASSET,Bank,Petty cash on hand,',
-  '1100,Accounts Receivable,ASSET,Accounts Receivable,Customer balances,',
-  '1500,Fixed Assets,ASSET,Fixed Asset,Equipment and machinery,',
-  '1510,Accumulated Depreciation,ASSET,Fixed Asset,Contra-asset; credit-balance,1500',
-  '2000,Accounts Payable,LIABILITY,Accounts Payable,Vendor balances,',
-  '3000,Owner\'s Equity,EQUITY,,Equity capital,',
-  '4000,Sales Revenue,REVENUE,Income,Revenue from sales,',
-  '5000,Cost of Goods Sold,COGS,,Direct cost of products sold,',
-  '6000,Operating Expenses,EXPENSE,,General operating expenses,',
-  '6100,Rent Expense,EXPENSE,,Office rent,6000',
-  '6200,Depreciation Expense,EXPENSE,,Depreciation for the period,6000',
+  '1000,Cash - Operating,ASSET,Bank,Primary checking account,,5000.00',
+  '1010,Cash - Petty,ASSET,Bank,Petty cash on hand,,250.00',
+  '1100,Accounts Receivable,ASSET,Accounts Receivable,Customer balances,,',
+  '1500,Fixed Assets,ASSET,Fixed Asset,Equipment and machinery,,',
+  '1510,Accumulated Depreciation,ASSET,Fixed Asset,Contra-asset; credit-balance,1500,',
+  '2000,Accounts Payable,LIABILITY,Accounts Payable,Vendor balances,,',
+  '3000,Owner\'s Equity,EQUITY,,Equity capital,,',
+  '4000,Sales Revenue,REVENUE,Income,Revenue from sales,,',
+  '5000,Cost of Goods Sold,COGS,,Direct cost of products sold,,',
+  '6000,Operating Expenses,EXPENSE,,General operating expenses,,',
+  '6100,Rent Expense,EXPENSE,,Office rent,6000,',
+  '6200,Depreciation Expense,EXPENSE,,Depreciation for the period,6000,',
 ].join('\n') + '\n'
 
 const VALID_TYPES = new Set(['ASSET', 'LIABILITY', 'EQUITY', 'REVENUE', 'EXPENSE', 'COGS'])
@@ -112,6 +113,7 @@ export function parseCsvAccounts(content: string): ParseResult {
   const iSubType = findIdx('subtype', 'sub type', 'sub-type')
   const iDesc = findIdx('description', 'desc')
   const iParent = findIdx('parent code', 'parent', 'parentcode')
+  const iOpeningBalance = findIdx('opening balance', 'openingbalance', 'opening', 'ob')
 
   if (iCode < 0 || iName < 0) {
     return { rows: [], errors: [{ message: 'CSV must include at least "Code" and "Name" columns' }] }
@@ -149,9 +151,24 @@ export function parseCsvAccounts(content: string): ParseResult {
     const description = iDesc >= 0 ? (cells[iDesc] ?? '').trim() || undefined : undefined
     const parentCode = iParent >= 0 ? (cells[iParent] ?? '').trim() || undefined : undefined
 
+    // Optional opening balance — strip $ and , for tolerance; skip if blank or zero
+    let openingBalance: number | undefined
+    if (iOpeningBalance >= 0) {
+      const raw = (cells[iOpeningBalance] ?? '').trim().replace(/[$,]/g, '')
+      if (raw) {
+        const n = parseFloat(raw)
+        if (Number.isFinite(n)) {
+          if (n !== 0) openingBalance = n
+        } else {
+          errors.push({ line: lineNum, message: `Invalid opening balance "${raw}" for ${code} - ${name}` })
+        }
+      }
+    }
+
     rows.push({
       code, name, type, subType, description, parentCode,
       isBankAccount: isBank,
+      openingBalance,
       rawSourceLine: lineNum,
       warnings: [],
     })

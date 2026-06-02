@@ -1,6 +1,7 @@
 import { db } from '../db'
 import { parseIif } from '../iif'
 import { parseCsvAccounts, normalizeIifAccounts, type ParsedAccountRow, type ParseResult } from './import-parse'
+import { upsertOpeningBalanceJE } from '../opening-balance/db'
 
 /**
  * Chart-of-Accounts import engine. Two-phase:
@@ -159,11 +160,19 @@ export async function commitImport(input: {
               subType: row.subType,
               description: row.description,
               isBankAccount: row.isBankAccount ?? false,
+              openingBalance: row.openingBalance ?? 0,
             },
-            select: { id: true, code: true, name: true },
+            select: { id: true, code: true, name: true, type: true },
           })
           codeToId.set(created.code.toLowerCase(), created.id)
           nameToId.set(created.name.toLowerCase(), created.id)
+          if (row.openingBalance && row.openingBalance !== 0) {
+            await upsertOpeningBalanceJE(tx, {
+              entityId: input.entityId,
+              account: created,
+              openingBalance: row.openingBalance,
+            })
+          }
           result.created++
         } else if (action === 'update' && cr.existingId) {
           await tx.account.update({
@@ -173,8 +182,22 @@ export async function commitImport(input: {
               subType: row.subType,
               description: row.description,
               isBankAccount: row.isBankAccount ?? undefined,
+              ...(row.openingBalance !== undefined ? { openingBalance: row.openingBalance } : {}),
             },
           })
+          if (row.openingBalance !== undefined) {
+            const acc = await tx.account.findUnique({
+              where: { id: cr.existingId },
+              select: { id: true, code: true, name: true, type: true },
+            })
+            if (acc) {
+              await upsertOpeningBalanceJE(tx, {
+                entityId: input.entityId,
+                account: acc,
+                openingBalance: row.openingBalance,
+              })
+            }
+          }
           result.updated++
         } else if (action === 'conflict' && input.overwriteOnConflict && cr.existingId) {
           // User opted to overwrite name conflicts: rename the existing

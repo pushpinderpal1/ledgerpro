@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, createContext, useContext, Fragment }
 // ─── Types ─────────────────────────────────────────────────────────────────────
 interface Entity { id: string; name: string; slug: string; currency: string; userAccess?: { role: string }[] }
 interface User   { id: string; name: string; email: string; isSuperAdmin: boolean }
-interface Account{ id: string; code: string; name: string; type: string; subType?: string; isBankAccount?: boolean; parentId?: string | null; description?: string | null; usageCount?: number; isActive?: boolean }
+interface Account{ id: string; code: string; name: string; type: string; subType?: string; isBankAccount?: boolean; parentId?: string | null; description?: string | null; usageCount?: number; isActive?: boolean; openingBalance?: number; currentBalance?: number }
 interface JournalEntry { id: string; ref: string; date: string; description: string; status: string; lines: JournalLine[] }
 interface JournalLine  { id: string; accountId: string; account: { code: string; name: string }; debit: number; credit: number }
 interface ApInvoice { id: string; vendor: string; invoiceNo: string; dueDate: string; amount: number; balance: number; status: string; agingBucket: string; daysOverdue: number }
@@ -711,12 +711,12 @@ function AccountsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') =>
   const [showForm, setShowForm] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [showImport, setShowImport] = useState(false)
-  const blankForm = { code: '', name: '', type: 'EXPENSE', subType: '', description: '', parentId: '', isBankAccount: false }
+  const blankForm = { code: '', name: '', type: 'EXPENSE', subType: '', description: '', parentId: '', isBankAccount: false, openingBalance: '' }
   const [form, setForm] = useState(blankForm)
 
   const load = useCallback(() => {
     if (!currentEntity) return
-    fetch(`/api/accounts?entityId=${currentEntity.id}`).then(r => r.json()).then(setAccounts)
+    fetch(`/api/accounts?entityId=${currentEntity.id}&withBalances=1`).then(r => r.json()).then(setAccounts)
   }, [currentEntity])
 
   useEffect(() => { load() }, [load])
@@ -727,6 +727,7 @@ function AccountsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') =>
       code: a.code, name: a.name, type: a.type,
       subType: a.subType ?? '', description: a.description ?? '',
       parentId: a.parentId ?? '', isBankAccount: !!a.isBankAccount,
+      openingBalance: a.openingBalance ? String(a.openingBalance) : '',
     })
     setShowForm(true)
   }
@@ -739,9 +740,16 @@ function AccountsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') =>
     const isEdit = !!editingId
     const url = '/api/accounts'
     const method = isEdit ? 'PATCH' : 'POST'
+    const opening = form.openingBalance ? parseFloat(form.openingBalance) : 0
+    const baseBody = {
+      code: form.code, name: form.name, type: form.type,
+      subType: form.subType, description: form.description,
+      parentId: form.parentId, isBankAccount: form.isBankAccount,
+      openingBalance: Number.isFinite(opening) ? opening : 0,
+    }
     const body = isEdit
-      ? { entityId: currentEntity.id, id: editingId, ...form, parentId: form.parentId || null, subType: form.subType || null, description: form.description || null }
-      : { entityId: currentEntity.id, ...form, parentId: form.parentId || undefined }
+      ? { entityId: currentEntity.id, id: editingId, ...baseBody, parentId: form.parentId || null, subType: form.subType || null, description: form.description || null }
+      : { entityId: currentEntity.id, ...baseBody, parentId: form.parentId || undefined }
     const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
     if (res.ok) {
       showToast(isEdit ? 'Account updated' : 'Account created')
@@ -883,6 +891,20 @@ function AccountsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') =>
                 <span><strong>Is bank account</strong> — makes this account selectable in Bank Reconciliation</span>
               </label>
             </div>
+            <div>
+              <label style={S.label}>Opening Balance</label>
+              <input
+                style={S.input}
+                value={form.openingBalance}
+                onChange={e => setForm(f => ({...f, openingBalance: e.target.value}))}
+                placeholder="0.00"
+                inputMode="decimal"
+              />
+              <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>
+                Enter a positive number on the account&apos;s natural side ({['ASSET','EXPENSE','COGS'].includes(form.type) ? 'DR' : 'CR'} for {form.type}).
+                A balanced journal entry will be auto-posted on the entity&apos;s opening date with the contra to <em>Opening Balance Equity</em> (account 3999).
+              </div>
+            </div>
           </div>
           <input style={{ ...S.input, marginBottom: 12 }} value={form.description} onChange={e => setForm(f => ({...f,description:e.target.value}))} placeholder="Description (optional)" />
           <div style={{ display:'flex',gap:8 }}>
@@ -894,8 +916,14 @@ function AccountsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') =>
 
       <div style={S.card}>
         <table style={S.table}>
-          <thead><tr>{['Code','Account Name','Type','Sub-type','Bank?','Usage',''].map(h => <th key={h} style={S.th}>{h}</th>)}</tr></thead>
-          <tbody>{tree.map(a => (
+          <thead><tr>{['Code','Account Name','Type','Sub-type','Bank?','Opening Balance','Current Balance','Usage',''].map(h => <th key={h} style={S.th}>{h}</th>)}</tr></thead>
+          <tbody>{tree.map(a => {
+            const isDrNatural = ['ASSET','EXPENSE','COGS'].includes(a.type)
+            const cur = a.currentBalance ?? 0
+            const curSide: 'DR'|'CR'|'' = cur > 0 ? 'DR' : cur < 0 ? 'CR' : ''
+            const curUnnatural = (curSide === 'DR' && !isDrNatural) || (curSide === 'CR' && isDrNatural)
+            const ob = a.openingBalance ?? 0
+            return (
             <tr key={a.id}>
               <td style={{ ...S.td, fontFamily: 'monospace', fontSize: 12, paddingLeft: 8 + a.depth * 24 }}>
                 {a.depth > 0 && <span style={{ color: '#cbd5e1', marginRight: 6 }}>↳</span>}
@@ -905,6 +933,14 @@ function AccountsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') =>
               <td style={S.td}><span style={{ ...S.typeBadge, background: TYPE_COLORS[a.type] + '18', color: TYPE_COLORS[a.type] }}>{a.type}</span></td>
               <td style={{ ...S.td, fontSize: 12, color: '#64748b' }}>{a.subType ?? '—'}</td>
               <td style={S.td}>{a.isBankAccount ? <span style={{ background: '#dbeafe', color: '#1d4ed8', padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600 }}>BANK</span> : <span style={{ color: '#cbd5e1' }}>—</span>}</td>
+              <td style={{ ...S.td, textAlign: 'right', fontFamily: 'monospace', fontSize: 12 }}>
+                {ob !== 0 ? `$${fmt(Math.abs(ob))} ${ob < 0 ? '(neg)' : ''}` : <span style={{ color: '#cbd5e1' }}>—</span>}
+              </td>
+              <td style={{ ...S.td, textAlign: 'right', fontFamily: 'monospace', fontSize: 12,
+                           color: curSide === '' ? '#cbd5e1' : curUnnatural ? '#dc2626' : '#0f172a',
+                           fontWeight: 600 }}>
+                {curSide === '' ? '—' : `$${fmt(Math.abs(cur))} ${curSide}`}
+              </td>
               <td style={{ ...S.td, fontSize: 12, color: '#64748b', textAlign: 'right' }}>{a.usageCount ?? 0}</td>
               <td style={{ ...S.td, textAlign: 'right' }}>
                 {canWrite && <>
@@ -914,7 +950,7 @@ function AccountsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') =>
                 </>}
               </td>
             </tr>
-          ))}</tbody>
+          )})}</tbody>
         </table>
       </div>
 

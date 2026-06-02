@@ -22,6 +22,7 @@ model LegalEntity {
   fiscalMonth Int      @default(1)
   logo        String?
   isActive    Boolean  @default(true)
+  openingDate DateTime?                              // optional anchor for opening-balance journal entries; defaults to Jan 1 of current year
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -178,6 +179,7 @@ model Account {
   isActive      Boolean     @default(true)
   isBankAccount Boolean     @default(false)
   taxCode       String?
+  openingBalance Decimal    @default(0) @db.Decimal(18, 2)
   createdAt     DateTime    @default(now())
   updatedAt     DateTime    @updatedAt
 

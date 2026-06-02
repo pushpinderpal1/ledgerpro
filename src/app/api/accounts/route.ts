@@ -3,17 +3,27 @@ import { z } from 'zod'
 import { db } from '@/lib/db'
 import { requireEntityAccess } from '@/lib/auth'
 import { logAudit } from '@/lib/audit'
+import { upsertOpeningBalanceJE } from '@/lib/opening-balance/db'
 
 /**
  * Chart of Accounts API.
- *   GET    ?entityId=                       → list (with usage counts for UI lock logic)
- *   POST   create
- *   PATCH  edit (code/type locked once used)
- *   DELETE ?entityId=&id=                   → soft-delete if used, hard-delete if unused
+ *
+ *   GET    ?entityId=                  → list (usage counts for UI lock logic)
+ *   GET    ?entityId=&withBalances=1   → list + posted-JE balance per account
+ *   POST   create  (optionally with openingBalance — auto-posts OB JE)
+ *   PATCH  edit    (openingBalance change auto-updates OB JE)
+ *   DELETE ?entityId=&id=              → soft-delete if used, hard-delete if unused
  */
 
+const numericLikeSchema = z.union([z.number(), z.string()]).transform(v => {
+  if (typeof v === 'number') return v
+  const n = parseFloat(v)
+  return Number.isFinite(n) ? n : 0
+})
+
 export async function GET(req: NextRequest) {
-  const entityId = req.nextUrl.searchParams.get('entityId')
+  const sp = req.nextUrl.searchParams
+  const entityId = sp.get('entityId')
   if (!entityId) return NextResponse.json({ error: 'entityId required' }, { status: 400 })
   const auth = await requireEntityAccess(req, entityId, 'accounts:read')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
@@ -23,11 +33,36 @@ export async function GET(req: NextRequest) {
     orderBy: [{ type: 'asc' }, { code: 'asc' }],
     include: { _count: { select: { journalLines: true } } },
   })
-  // Surface usage count flat for the UI.
+
   const flat = accounts.map(a => {
     const { _count, ...rest } = a
-    return { ...rest, usageCount: _count.journalLines }
+    return {
+      ...rest,
+      openingBalance: Number(rest.openingBalance),
+      usageCount: _count.journalLines,
+    }
   })
+
+  if (sp.get('withBalances') === '1') {
+    const rows = await db.journalLine.groupBy({
+      by: ['accountId'],
+      where: { journalEntry: { entityId, status: 'POSTED' } },
+      _sum: { debit: true, credit: true },
+    })
+    const balanceMap = new Map<string, number>()
+    for (const r of rows) {
+      const dr = Number(r._sum.debit ?? 0)
+      const cr = Number(r._sum.credit ?? 0)
+      balanceMap.set(r.accountId, dr - cr)
+    }
+    return NextResponse.json(flat.map(a => ({
+      ...a,
+      // Signed: positive = DR balance, negative = CR balance.
+      // Includes the auto-posted opening-balance JE.
+      currentBalance: balanceMap.get(a.id) ?? 0,
+    })))
+  }
+
   return NextResponse.json(flat)
 }
 
@@ -41,6 +76,7 @@ const createSchema = z.object({
   parentId: z.string().nullable().optional(),
   isBankAccount: z.boolean().optional(),
   taxCode: z.string().optional(),
+  openingBalance: numericLikeSchema.optional(),
 })
 
 export async function POST(req: NextRequest) {
@@ -50,18 +86,37 @@ export async function POST(req: NextRequest) {
   try {
     const data = createSchema.parse(body)
     if (data.parentId) {
-      // Validate parent belongs to same entity and isn't deactivated.
       const parent = await db.account.findFirst({ where: { id: data.parentId, entityId: data.entityId } })
       if (!parent) return NextResponse.json({ error: 'Parent account not found in this entity' }, { status: 400 })
     }
-    const account = await db.account.create({ data: { ...data, parentId: data.parentId ?? null } })
+    const opening = data.openingBalance ?? 0
+
+    const account = await db.$transaction(async (tx) => {
+      const created = await tx.account.create({
+        data: {
+          ...data,
+          parentId: data.parentId ?? null,
+          openingBalance: opening,
+        },
+      })
+      if (opening !== 0) {
+        await upsertOpeningBalanceJE(tx, {
+          entityId: data.entityId,
+          account: { id: created.id, code: created.code, name: created.name, type: created.type },
+          openingBalance: opening,
+          createdBy: auth.session?.userId,
+        })
+      }
+      return created
+    })
+
     await logAudit({
       entityId: data.entityId, userId: auth.session?.userId,
       action: 'ACCOUNT_CREATED', resource: 'Account', resourceId: account.id,
-      after: { code: account.code, name: account.name, type: account.type, isBankAccount: account.isBankAccount },
+      after: { code: account.code, name: account.name, type: account.type, isBankAccount: account.isBankAccount, openingBalance: opening },
       request: req,
     })
-    return NextResponse.json(account, { status: 201 })
+    return NextResponse.json({ ...account, openingBalance: opening }, { status: 201 })
   } catch (e) {
     if (e instanceof z.ZodError) return NextResponse.json({ error: e.errors }, { status: 400 })
     if ((e as {code?:string}).code === 'P2002') return NextResponse.json({ error: 'Account code already exists' }, { status: 409 })
@@ -80,6 +135,7 @@ const patchSchema = z.object({
   parentId: z.string().nullable().optional(),
   isBankAccount: z.boolean().optional(),
   taxCode: z.string().nullable().optional(),
+  openingBalance: numericLikeSchema.optional(),
 })
 
 export async function PATCH(req: NextRequest) {
@@ -95,24 +151,30 @@ export async function PATCH(req: NextRequest) {
     })
     if (!before) return NextResponse.json({ error: 'Account not found' }, { status: 404 })
 
-    const inUse = before._count.journalLines > 0
+    // Exclude opening-balance JEs from the "in-use" check so users can
+    // ADJUST opening balances even after one has been posted. Only block
+    // when there are NON-OB postings.
+    const nonObUsage = await db.journalLine.count({
+      where: {
+        accountId: data.id,
+        journalEntry: { source: { not: 'OPENING_BALANCE' } },
+      },
+    })
+    const inUse = nonObUsage > 0
 
-    // Hard-block: changing code or type after the account has been used would
-    // corrupt journal references and downstream reports.
     if (inUse) {
       if (data.code && data.code !== before.code) {
         return NextResponse.json({
-          error: `Cannot change code — account is used in ${before._count.journalLines} journal line(s). Create a new account instead.`,
+          error: `Cannot change code - account is used in ${nonObUsage} journal line(s). Create a new account instead.`,
         }, { status: 409 })
       }
       if (data.type && data.type !== before.type) {
         return NextResponse.json({
-          error: `Cannot change type — account is used in ${before._count.journalLines} journal line(s). Type changes corrupt P&L vs Balance Sheet classifications.`,
+          error: `Cannot change type - account is used in ${nonObUsage} journal line(s). Type changes corrupt P&L vs Balance Sheet classifications.`,
         }, { status: 409 })
       }
     }
 
-    // Cycle detection for parentId.
     if (data.parentId === data.id) {
       return NextResponse.json({ error: 'An account cannot be its own parent' }, { status: 400 })
     }
@@ -132,16 +194,36 @@ export async function PATCH(req: NextRequest) {
       }
     }
 
-    const { entityId, id, ...patch } = data
-    const updated = await db.account.update({ where: { id }, data: patch })
+    const { entityId, id, openingBalance: newOpening, ...patch } = data
+    const openingChanged = newOpening !== undefined && Number(newOpening) !== Number(before.openingBalance)
+
+    const updated = await db.$transaction(async (tx) => {
+      const u = await tx.account.update({
+        where: { id },
+        data: {
+          ...patch,
+          ...(newOpening !== undefined ? { openingBalance: newOpening } : {}),
+        },
+      })
+      if (openingChanged) {
+        await upsertOpeningBalanceJE(tx, {
+          entityId,
+          account: { id: u.id, code: u.code, name: u.name, type: u.type },
+          openingBalance: Number(newOpening),
+          createdBy: auth.session?.userId,
+        })
+      }
+      return u
+    })
+
     await logAudit({
       entityId, userId: auth.session?.userId,
       action: 'ACCOUNT_UPDATED', resource: 'Account', resourceId: id,
-      before: { code: before.code, name: before.name, type: before.type, subType: before.subType, isBankAccount: before.isBankAccount, parentId: before.parentId },
-      after:  { code: updated.code, name: updated.name, type: updated.type, subType: updated.subType, isBankAccount: updated.isBankAccount, parentId: updated.parentId },
+      before: { code: before.code, name: before.name, type: before.type, openingBalance: Number(before.openingBalance) },
+      after:  { code: updated.code, name: updated.name, type: updated.type, openingBalance: Number(updated.openingBalance) },
       request: req,
     })
-    return NextResponse.json(updated)
+    return NextResponse.json({ ...updated, openingBalance: Number(updated.openingBalance) })
   } catch (e) {
     if (e instanceof z.ZodError) return NextResponse.json({ error: e.errors }, { status: 400 })
     return NextResponse.json({ error: (e as Error).message }, { status: 400 })
@@ -161,8 +243,16 @@ export async function DELETE(req: NextRequest) {
   })
   if (!before) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
-  // Soft-delete if used; hard-delete if unused.
-  const used = before._count.journalLines + before._count.apInvoices
+  // For deletion: count only non-OB usage. If the only usage is the OB JE
+  // itself, the delete proceeds (we clean up the OB JE first).
+  const nonObUsage = await db.journalLine.count({
+    where: {
+      accountId: id,
+      journalEntry: { source: { not: 'OPENING_BALANCE' } },
+    },
+  })
+  const used = nonObUsage + before._count.apInvoices
+
   if (used > 0) {
     await db.account.update({ where: { id }, data: { isActive: false } })
     await logAudit({
@@ -172,7 +262,15 @@ export async function DELETE(req: NextRequest) {
     })
     return NextResponse.json({ softDeleted: true, reason: `Used in ${used} record(s)` })
   }
-  await db.account.delete({ where: { id } })
+
+  await db.$transaction(async (tx) => {
+    await upsertOpeningBalanceJE(tx, {
+      entityId,
+      account: { id, code: before.code, name: before.name, type: before.type },
+      openingBalance: 0,
+    })
+    await tx.account.delete({ where: { id } })
+  })
   await logAudit({
     entityId, userId: auth.session?.userId,
     action: 'ACCOUNT_DELETED', resource: 'Account', resourceId: id,
