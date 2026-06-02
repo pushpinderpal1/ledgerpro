@@ -311,3 +311,94 @@ export async function finalizeReconciliation(
   })
 }
 
+
+/**
+ * Preview function — returns the list of posted journal lines on a bank
+ * account up to a given statement date, WITHOUT creating a reconciliation.
+ *
+ * Used by the Start form so the user can see what they're about to reconcile
+ * before committing. Same query the actual reconciliation uses, so what you
+ * see here is exactly what will appear in the detail view.
+ */
+export async function previewBankAccount(input: {
+  entityId: string
+  bankAccountId: string
+  statementDate: string
+}) {
+  const bank = await db.account.findFirst({
+    where: { id: input.bankAccountId, entityId: input.entityId },
+    select: { id: true, code: true, name: true, isBankAccount: true },
+  })
+  if (!bank) throw new Error('Bank account not found')
+  if (!bank.isBankAccount) throw new Error('Selected account is not flagged as a bank account')
+
+  const stmtDate = new Date(input.statementDate)
+  // Include the entire statement day
+  const stmtDateEnd = new Date(stmtDate)
+  stmtDateEnd.setHours(23, 59, 59, 999)
+
+  // Lines on or before the statement date (the ones that will appear in the recon)
+  const linesInWindow = await db.journalLine.findMany({
+    where: {
+      accountId: input.bankAccountId,
+      entry: { entityId: input.entityId, status: 'POSTED', date: { lte: stmtDateEnd } },
+    },
+    include: { entry: { select: { ref: true, date: true, description: true } } },
+    orderBy: { entry: { date: 'desc' } },
+  })
+
+  // Lines AFTER the statement date (so we can tell the user "if you want these too, push the date out")
+  const linesAfter = await db.journalLine.findMany({
+    where: {
+      accountId: input.bankAccountId,
+      entry: { entityId: input.entityId, status: 'POSTED', date: { gt: stmtDateEnd } },
+    },
+    include: { entry: { select: { ref: true, date: true, description: true } } },
+    orderBy: { entry: { date: 'asc' } },
+    take: 10,
+  })
+
+  let movementCents = 0
+  const inWindow = linesInWindow.map(l => {
+    const mv = lineMovementCents(l.debit, l.credit)
+    movementCents += mv
+    return {
+      id: l.id,
+      date: l.entry.date,
+      ref: l.entry.ref,
+      description: l.description || l.entry.description,
+      debit: fromCents(toCents(l.debit)),
+      credit: fromCents(toCents(l.credit)),
+      movement: fromCents(mv),
+      clearedStatus: l.clearedStatus,
+      reconciledId: l.reconciledId,
+    }
+  })
+
+  const totalLinesOnAccount = await db.journalLine.count({
+    where: {
+      accountId: input.bankAccountId,
+      entry: { entityId: input.entityId, status: 'POSTED' },
+    },
+  })
+
+  return {
+    bankAccount: { id: bank.id, code: bank.code, name: bank.name },
+    statementDate: stmtDate.toISOString().slice(0, 10),
+    linesInWindow: inWindow,
+    linesAfter: linesAfter.map(l => ({
+      date: l.entry.date,
+      ref: l.entry.ref,
+      description: l.description || l.entry.description,
+      debit: fromCents(toCents(l.debit)),
+      credit: fromCents(toCents(l.credit)),
+    })),
+    summary: {
+      countInWindow: inWindow.length,
+      countAfter: linesAfter.length,
+      totalLinesOnAccount,
+      // Cumulative book movement through the statement date (debit-credit on the bank account)
+      bookMovement: fromCents(movementCents),
+    },
+  }
+}

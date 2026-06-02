@@ -1,104 +1,106 @@
-# LedgerPro — Bank Rec diagnostic improvements
+# LedgerPro — Bank Recon: live preview in the Start form
 
-## Why this bundle exists
+## What your screenshots told me
 
-You paid a cheque via the AP Tracker and expected it to appear in Bank
-Reconciliation, but it didn't show. The recon library logic is actually
-correct — it queries all posted journal lines on the bank account up to the
-statement date — so if the cheque isn't appearing, one of these is true:
+**Image 2 (Trial Balance)** — the cheque posted correctly:
+- 1001 Bank Account — Credit $1,000 ← money leaving the bank (correct)
+- 6500 Marketing & Advertising — Debit $1,000 ← the expense
+- 2000 Accounts Payable — $0 ← net of the invoice creation + the payment
 
-1. **The cheque was paid from a different bank account** than the one
-   selected for the reconciliation
-2. **The statement date is before the cheque date** (so the cheque is
-   correctly excluded from this period)
-3. **The cheque payment didn't post a journal entry** (something went
-   wrong with my AP Pay fix on your data)
+So the JE is fine. The data is fine.
 
-The previous UI just showed "No book transactions in this period" with
-no information to help you figure out which. This bundle replaces that
-with an actionable diagnostic empty state.
+**Image 1 (Bank Recon)** — you're still on the **Start a new reconciliation**
+form. The list below says "No reconciliations yet" because you haven't clicked
+the purple **Start** button yet. The cheque will appear once you click Start
+and land on the reconciliation detail view.
 
-## What this changes
+That said — your mental model is the right one. You should be able to see
+what you're about to reconcile **before** committing. This bundle ships
+that: a live preview that shows the transactions inline as soon as you pick
+a bank account + statement date.
 
-Two files. No schema change, no migration, no new deps.
+## What this bundle adds
+
+Three files. No schema change, no migration, no new deps.
 
 ### `src/lib/recon/index.ts`
 
-Extends `getReconciliationState()` to return a `diagnostics` field:
+New function `previewBankAccount({ entityId, bankAccountId, statementDate })`.
+Returns:
+- The bank account name (sanity check)
+- All journal lines on this account on or before the statement date
+- Up to 10 lines AFTER the statement date (so we can tell you "if you want these too, push the date out")
+- Summary: count in window, count after, total lines on account, book movement (sum of debits − credits)
 
-```ts
-diagnostics: {
-  totalLinesOnAccount       // # posted lines on this bank account, ANY date
-  linesAfterStatementDate   // # posted lines dated > statement date
-  totalBankAccounts         // # accounts in entity flagged isBankAccount
-  recentLinesOnAccount      // most recent 3 lines on this account
-}
-```
+### `src/app/api/recon/route.ts`
 
-Also includes `bankAccount` (id, code, name) in the returned `reconciliation`
-object so the UI can display it prominently.
+Adds `?preview=1&bankAccountId=&statementDate=` to the existing GET endpoint.
+Returns the preview payload above.
 
 ### `src/app/page.tsx`
 
-Two improvements to the recon detail view:
+The Start form now shows a **live preview panel** as soon as both bank
+account and statement date are filled in.
 
-**1. Blue banner at the top** showing exactly which bank account and statement
-date the recon is for:
+**If transactions exist in the window:**
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│ RECONCILING        STATEMENT DATE                       │
-│ 1100 — Checking    Jun 2, 2026                          │
-└─────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│ Preview — transactions on this account through Jun 2, 2026           │
+├──────────────────────────────────────────────────────────────────────┤
+│ Date         Ref            Description                Debit  Credit │
+│ Jun 2, 2026  APP-2026-0001  AP Payment: ABC inc...           $1,000  │
+├──────────────────────────────────────────────────────────────────────┤
+│ 1 transaction in window. Book movement: −$1,000                      │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
-This is the single most common diagnostic: "wait, did I pick the wrong
-account?"
+You'd see this for your cheque — confirming the right account and date
+*before* you click Start.
 
-**2. The "No book transactions in this period" empty state is replaced**
-with an actionable diagnostic that explains why no transactions are showing:
+**If transactions exist but are after the statement date:**
 
-If there are **zero** journal lines on the account at all:
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│ ⚠ No transactions found on this account on or before this date.      │
+│                                                                       │
+│ But this account has 3 posted lines on later dates. Try a later      │
+│ statement date.                                                       │
+│  • Jun 5, 2026 — AP Payment: ABC inc (−$1,000)                       │
+│  • Jun 8, 2026 — Deposit (+$5,000)                                   │
+└──────────────────────────────────────────────────────────────────────┘
+```
 
-> No transactions found in this period
->
-> **This bank account has no posted journal lines at all.** Common causes:
-> - The payment was recorded against a different bank account — you have
->   3 accounts flagged as bank accounts; check which one you used
-> - The payment was created but the journal entry didn't post successfully
-> - You opened this reconciliation page but the payment was never made
+**If transactions don't exist at all on this account:**
 
-If there **are** journal lines but they're outside the period:
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│ ⚠ No transactions found on this account on or before this date.      │
+│                                                                       │
+│ And no transactions exist on this account at all. Check that you     │
+│ picked the right bank account (the one you actually paid from).      │
+└──────────────────────────────────────────────────────────────────────┘
+```
 
-> This bank account has 5 total posted journal lines, but none on or
-> before your statement date of Jun 1, 2026.
->
-> 2 lines are dated after your statement date. Increase the statement
-> date or start a new reconciliation with a later date.
->
-> Most recent lines on this account:
-> Jun 2, 2026 | APP-2026-0001 | AP Payment: ABC Inc #1 (CHEQUE) | −$1,000.00
-> May 28, 2026 | JE-2026-0042 | Opening balance               | +$5,000.00
+This is the part the previous bundle was meant to deliver — but only after
+you started a recon. This version surfaces it earlier, in the form itself,
+so you don't have to click Start to find out.
 
-## Most likely root cause for what you're seeing
+## What you'll see after deploying this
 
-If your cheque payment succeeded (you saw a toast like "Payment recorded —
-journal APP-YYYY-NNNN"), the journal entry exists. So the most likely cause
-is either:
+For your specific situation:
+1. Open Bank Recon → click "+ Start reconciliation"
+2. Pick `1001 — Bank Account (Current Account)`
+3. Pick statement date `06/02/2026`
+4. The preview panel appears immediately showing your `APP-2026-0001` cheque line
+5. Enter Beginning $0 and Ending $9000 (or whatever your actual statement says)
+6. Click Start → land on detail view with your cheque ready to tick
 
-- **You started the recon with a statement date earlier than today** — the
-  cheque is dated today (or whenever you paid it). Statement dates older
-  than that will exclude it. After deploy, the empty state will show
-  "X lines are dated after your statement date" to make this obvious.
-
-- **You started the recon on a different bank account** than the one you
-  paid from. After deploy, the blue banner at the top shows the bank
-  account name; cross-check with the AP Pay modal's bank dropdown.
-
-If neither of those is the issue, the new empty state will show "This bank
-account has no posted journal lines at all" — which means the JE didn't
-get created when you clicked Pay. In that case, screenshot it for me and
-also check the Journal Entries page for an entry with ref starting `APP-`.
+If you have $1,000 going out but enter Ending $9,000, the recon will show
+out of balance by $10,000 (because the only book movement is −$1,000). That's
+the recon math working correctly — it's telling you the statement and the
+book don't agree. You'd need either a deposit JE to match the statement,
+or revise the ending balance.
 
 ## Deploy
 
@@ -106,24 +108,16 @@ also check the Journal Entries page for an entry with ref starting `APP-`.
 cd C:\ledgerpro
 # extract the zip
 git add -A
-git commit -m "Bank recon: prominent bank-account header + diagnostic empty state"
+git commit -m "Bank recon: live preview of transactions in Start form"
 git push
 ```
 
-After Railway redeploys, hard-refresh and open the empty reconciliation:
-you'll see either (a) the banner makes it obvious you picked the wrong
-account, (b) the new empty state explains the date mismatch, or (c) the
-empty state confirms the JE doesn't exist (in which case there's a real
-data bug for me to chase).
+After Railway deploys, hard-refresh and re-open Bank Recon. Click "+ Start
+reconciliation" and fill bank account + date — the preview appears below
+the form before you click Start.
 
 ## Tests
 
-All 166 tests continue to pass. No new tests — the diagnostic logic is
-straightforward read-only DB queries that don't need their own coverage.
-
-## What's not in this bundle
-
-I deliberately did NOT modify the recon date filter or how journal lines
-are matched. The current logic — "posted JLs on this account where
-`entry.date <= statementDate`" — is the right one. The user just needs
-better visibility into what that query returned.
+All 166 tests continue to pass. No new tests added — the preview function
+is a read-only DB query, structurally identical to the existing
+`getReconciliationState` query.

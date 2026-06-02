@@ -2641,6 +2641,13 @@ interface ReconDiagnostics {
   totalBankAccounts: number
   recentLinesOnAccount: Array<{ date: string; ref: string; description: string | null; debit: number; credit: number }>
 }
+interface ReconPreview {
+  bankAccount: { id: string; code: string; name: string }
+  statementDate: string
+  linesInWindow: Array<{ id: string; date: string; ref: string; description: string | null; debit: number; credit: number; movement: number; clearedStatus: string; reconciledId: string | null }>
+  linesAfter: Array<{ date: string; ref: string; description: string | null; debit: number; credit: number }>
+  summary: { countInWindow: number; countAfter: number; totalLinesOnAccount: number; bookMovement: number }
+}
 interface ReconState {
   reconciliation: { id: string; statementDate: string; bankAccountId: string; status: string; bankAccount?: { id: string; code: string; name: string } }
   cleared: ReconLine[]
@@ -2657,6 +2664,8 @@ function ReconPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => vo
   const [activeId, setActiveId] = useState<string | null>(null)
   const [state, setState] = useState<ReconState | null>(null)
   const [showStart, setShowStart] = useState(false)
+  const [preview, setPreview] = useState<ReconPreview | null>(null)
+  const [previewLoading, setPreviewLoading] = useState(false)
   const today = new Date().toISOString().slice(0,10)
   const [startForm, setStartForm] = useState({
     bankAccountId:'', statementDate: today, beginningBalance:'', endingBalance:'',
@@ -2677,6 +2686,27 @@ function ReconPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => vo
 
   useEffect(() => { loadList() }, [loadList])
   useEffect(() => { if (activeId) loadOne(activeId) }, [activeId, loadOne])
+
+  // Fetch the live preview of transactions whenever the user changes
+  // bank account or statement date in the Start form. Lets them spot a
+  // mis-picked account or out-of-range date before clicking Start.
+  useEffect(() => {
+    if (!showStart || !currentEntity || !startForm.bankAccountId || !startForm.statementDate) {
+      setPreview(null)
+      return
+    }
+    setPreviewLoading(true)
+    const sp = new URLSearchParams({
+      entityId: currentEntity.id,
+      preview: '1',
+      bankAccountId: startForm.bankAccountId,
+      statementDate: startForm.statementDate,
+    })
+    fetch(`/api/recon?${sp}`)
+      .then(r => r.json())
+      .then(d => { if (!d.error) setPreview(d); else setPreview(null) })
+      .finally(() => setPreviewLoading(false))
+  }, [showStart, currentEntity, startForm.bankAccountId, startForm.statementDate])
 
   const bankAccounts = accounts.filter(a => a.isBankAccount)
 
@@ -2872,9 +2902,73 @@ function ReconPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => vo
               <div style={{ fontSize:11, color:'#94a3b8', marginTop:4 }}>If no file, you can still reconcile manually by ticking entries below.</div>
             </div>
           </div>
-          <div style={{ display:'flex', gap:8 }}>
+
+          {/* Live preview of what will appear in the reconciliation. Updates as
+              soon as the user picks a bank account + statement date. */}
+          {startForm.bankAccountId && startForm.statementDate && (
+            <div style={{ marginTop: 12, padding: 12, background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: '#475569', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span>Preview — transactions on this account through {fmtDate(startForm.statementDate)}</span>
+                {previewLoading && <span style={{ fontSize: 11, color: '#94a3b8' }}>loading…</span>}
+              </div>
+              {preview && (
+                <>
+                  {preview.linesInWindow.length === 0 ? (
+                    <div style={{ padding: 14, fontSize: 13, color: '#78350f', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 4 }}>
+                      <strong>No transactions found on this account on or before this date.</strong>
+                      {preview.summary.totalLinesOnAccount > 0 && (
+                        <div style={{ marginTop: 6, fontSize: 12 }}>
+                          But this account has {preview.summary.totalLinesOnAccount} posted line{preview.summary.totalLinesOnAccount === 1 ? '' : 's'} on later dates. Try a later statement date.
+                          {preview.linesAfter.length > 0 && (
+                            <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+                              {preview.linesAfter.slice(0, 3).map((l, i) => (
+                                <li key={i}>{fmtDate(l.date)} — {l.description ?? l.ref} ({l.debit > 0 ? `+$${fmt(l.debit)}` : `−$${fmt(l.credit)}`})</li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                      )}
+                      {preview.summary.totalLinesOnAccount === 0 && (
+                        <div style={{ marginTop: 6, fontSize: 12 }}>
+                          And no transactions exist on this account at all. Check that you picked the right bank account (the one you actually paid from).
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                        <thead><tr style={{ background: '#fff' }}>{['Date','Ref','Description','Debit','Credit'].map(h => <th key={h} style={{ ...S.th, padding: '4px 8px' }}>{h}</th>)}</tr></thead>
+                        <tbody>
+                          {preview.linesInWindow.slice(0, 10).map(l => (
+                            <tr key={l.id}>
+                              <td style={{ padding: '4px 8px' }}>{fmtDate(l.date)}</td>
+                              <td style={{ padding: '4px 8px', fontFamily: 'monospace', fontSize: 11 }}>{l.ref}</td>
+                              <td style={{ padding: '4px 8px' }}>{l.description ?? '—'}</td>
+                              <td style={{ padding: '4px 8px', textAlign: 'right', fontFamily: 'monospace', color: '#16a34a' }}>{l.debit > 0 ? `$${fmt(l.debit)}` : ''}</td>
+                              <td style={{ padding: '4px 8px', textAlign: 'right', fontFamily: 'monospace', color: '#dc2626' }}>{l.credit > 0 ? `$${fmt(l.credit)}` : ''}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                      {preview.linesInWindow.length > 10 && (
+                        <div style={{ fontSize: 11, color: '#64748b', marginTop: 4, textAlign: 'center' }}>
+                          … and {preview.linesInWindow.length - 10} more
+                        </div>
+                      )}
+                      <div style={{ marginTop: 8, padding: 8, background: '#fff', borderRadius: 4, fontSize: 12, color: '#475569' }}>
+                        <strong>{preview.summary.countInWindow}</strong> transaction{preview.summary.countInWindow === 1 ? '' : 's'} in window. Book movement (sum of debits − credits on this account): <strong style={{ fontFamily: 'monospace', color: preview.summary.bookMovement >= 0 ? '#16a34a' : '#dc2626' }}>{preview.summary.bookMovement >= 0 ? '+' : '−'}${fmt(Math.abs(preview.summary.bookMovement))}</strong>
+                        {preview.summary.countAfter > 0 && <span style={{ marginLeft: 8, color: '#94a3b8' }}>({preview.summary.countAfter} more line{preview.summary.countAfter === 1 ? '' : 's'} dated after this — excluded from this reconciliation)</span>}
+                      </div>
+                    </>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+
+          <div style={{ display:'flex', gap:8, marginTop: 12 }}>
             <button style={{ ...S.btn, ...S.btnPrimary }} onClick={startRecon}>Start</button>
-            <button style={S.btn} onClick={() => setShowStart(false)}>Cancel</button>
+            <button style={S.btn} onClick={() => { setShowStart(false); setPreview(null) }}>Cancel</button>
           </div>
         </div>
       )}
