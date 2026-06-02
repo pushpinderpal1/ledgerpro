@@ -57,6 +57,7 @@ model LegalEntity {
   fixedAssets     FixedAsset[]
   depreciationEntries DepreciationEntry[]
   misCodes       MisCode[]
+  vendorReconciliations VendorReconciliation[]
 
   @@map("legal_entities")
 }
@@ -744,6 +745,40 @@ model DepreciationEntry {
   @@unique([fixedAssetId, periodEnd])          // idempotency: one entry per asset per period
   @@index([entityId, periodEnd])
   @@map("depreciation_entries")
+}
+
+// ─── VENDOR RECONCILIATION ───────────────────────────────────────────────────
+// Pairs a vendor's external statement balance against the entity's internal
+// AP records, captures the difference, and lets the user investigate before
+// finalizing. Statement-line-level matching is intentionally deferred to v2
+// in favor of getting the balance comparison + audit trail in place first.
+
+enum VendorReconStatus {
+  DRAFT
+  FINALIZED
+}
+
+model VendorReconciliation {
+  id                String   @id @default(cuid())
+  entityId          String
+  vendor            String                                  // free-text vendor name (matches ApInvoice.vendor)
+  statementDate     DateTime
+  statementBalance  Decimal  @db.Decimal(18, 2)             // what the vendor's statement says
+  internalBalance   Decimal  @db.Decimal(18, 2)             // computed from internal AP records at finalize time
+  difference        Decimal  @db.Decimal(18, 2)             // statementBalance - internalBalance
+  status            VendorReconStatus @default(DRAFT)
+  notes             String?
+  createdBy         String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  finalizedAt       DateTime?
+  finalizedBy       String?
+
+  entity            LegalEntity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+
+  @@index([entityId, statementDate])
+  @@index([entityId, vendor])
+  @@map("vendor_reconciliations")
 }
 
 // ─── MIS CODES (DEPARTMENTS / DIMENSIONS) ────────────────────────────────────

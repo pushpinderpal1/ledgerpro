@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, createContext, useContext, Fragment }
 // ─── Types ─────────────────────────────────────────────────────────────────────
 interface Entity { id: string; name: string; slug: string; currency: string; userAccess?: { role: string }[] }
 interface User   { id: string; name: string; email: string; isSuperAdmin: boolean }
-interface Account{ id: string; code: string; name: string; type: string; subType?: string; isBankAccount?: boolean }
+interface Account{ id: string; code: string; name: string; type: string; subType?: string; isBankAccount?: boolean; parentId?: string | null; description?: string | null; usageCount?: number; isActive?: boolean }
 interface JournalEntry { id: string; ref: string; date: string; description: string; status: string; lines: JournalLine[] }
 interface JournalLine  { id: string; accountId: string; account: { code: string; name: string }; debit: number; credit: number }
 interface ApInvoice { id: string; vendor: string; invoiceNo: string; dueDate: string; amount: number; balance: number; status: string; agingBucket: string; daysOverdue: number }
@@ -38,6 +38,7 @@ const MODULE_ACCESS: Record<string, string[]> = {
   ap:         ['OWNER','ADMIN','ACCOUNTANT','AP_CLERK'],
   payments:   ['OWNER','ADMIN','ACCOUNTANT','AP_CLERK'],
   recon:      ['OWNER','ADMIN','ACCOUNTANT','AUDITOR'],
+  'vendor-recon': ['OWNER','ADMIN','ACCOUNTANT','AUDITOR','AP_CLERK'],
   reports:    ['OWNER','ADMIN','ACCOUNTANT','AUDITOR','CLIENT_VIEW'],
   assets:     ['OWNER','ADMIN','ACCOUNTANT','AUDITOR'],
   audit:      ['OWNER','ADMIN','AUDITOR'],
@@ -93,6 +94,7 @@ export default function LedgerProApp() {
     { id: 'ap',        label: 'AP Tracker',         icon: '◎' },
     { id: 'payments',  label: 'Payments',           icon: '✓' },
     { id: 'recon',     label: 'Bank Recon',         icon: '↔' },
+    { id: 'vendor-recon', label: 'Vendor Recon',    icon: '◐' },
     { id: 'assets',    label: 'Fixed Assets',       icon: '⬚' },
     { id: 'reports',   label: 'Reports',            icon: '▤' },
     { id: 'audit',     label: 'Audit Trail',        icon: '⊙' },
@@ -213,6 +215,7 @@ export default function LedgerProApp() {
                 {page === 'ap'        && <ApPage         showToast={showToast} />}
                 {page === 'payments'  && <PaymentsPage   showToast={showToast} />}
                 {page === 'recon'     && <ReconPage      showToast={showToast} />}
+                {page === 'vendor-recon' && <VendorReconPage showToast={showToast} />}
                 {page === 'assets'    && <AssetsPage     showToast={showToast} />}
                 {page === 'reports'   && <ReportsPage    showToast={showToast} />}
                 {page === 'audit'     && <AuditPage      showToast={showToast} />}
@@ -477,8 +480,10 @@ function AccountsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') =>
   const [accounts, setAccounts] = useState<Account[]>([])
   const [filter, setFilter] = useState('ALL')
   const [showForm, setShowForm] = useState(false)
+  const [editingId, setEditingId] = useState<string | null>(null)
   const [showImport, setShowImport] = useState(false)
-  const [form, setForm] = useState({ code: '', name: '', type: 'EXPENSE', subType: '', description: '' })
+  const blankForm = { code: '', name: '', type: 'EXPENSE', subType: '', description: '', parentId: '', isBankAccount: false }
+  const [form, setForm] = useState(blankForm)
 
   const load = useCallback(() => {
     if (!currentEntity) return
@@ -487,18 +492,104 @@ function AccountsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') =>
 
   useEffect(() => { load() }, [load])
 
+  const startEdit = (a: Account) => {
+    setEditingId(a.id)
+    setForm({
+      code: a.code, name: a.name, type: a.type,
+      subType: a.subType ?? '', description: a.description ?? '',
+      parentId: a.parentId ?? '', isBankAccount: !!a.isBankAccount,
+    })
+    setShowForm(true)
+  }
+
+  const cancel = () => { setShowForm(false); setEditingId(null); setForm(blankForm) }
+
   const save = async () => {
     if (!currentEntity) return
-    const res = await fetch('/api/accounts', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ entityId: currentEntity.id, ...form }),
-    })
-    if (res.ok) { showToast('Account created'); setShowForm(false); setForm({ code:'',name:'',type:'EXPENSE',subType:'',description:'' }); load() }
+    if (!form.code || !form.name) return showToast('Code and name are required', 'err')
+    const isEdit = !!editingId
+    const url = '/api/accounts'
+    const method = isEdit ? 'PATCH' : 'POST'
+    const body = isEdit
+      ? { entityId: currentEntity.id, id: editingId, ...form, parentId: form.parentId || null, subType: form.subType || null, description: form.description || null }
+      : { entityId: currentEntity.id, ...form, parentId: form.parentId || undefined }
+    const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+    if (res.ok) {
+      showToast(isEdit ? 'Account updated' : 'Account created')
+      cancel()
+      load()
+    } else { const d = await res.json(); showToast(d.error ?? 'Error', 'err') }
+  }
+
+  const del = async (a: Account) => {
+    if (!currentEntity) return
+    const used = a.usageCount ?? 0
+    const msg = used > 0
+      ? `"${a.code} ${a.name}" is used in ${used} journal line(s). Deleting will mark it inactive (historical data preserved). Continue?`
+      : `Delete "${a.code} ${a.name}"? This is permanent (account is unused).`
+    if (!confirm(msg)) return
+    const res = await fetch(`/api/accounts?entityId=${currentEntity.id}&id=${a.id}`, { method: 'DELETE' })
+    if (res.ok) { showToast('Done'); load() }
     else { const d = await res.json(); showToast(d.error ?? 'Error', 'err') }
   }
 
+  // Build the indented hierarchy view. Parents first; their children indented underneath.
+  // We work on `filtered` so the type filter still applies, but if a parent doesn't match
+  // the filter, its children are promoted to top-level so they're still visible.
   const filtered = filter === 'ALL' ? accounts : accounts.filter(a => a.type === filter)
+  const filteredIds = new Set(filtered.map(a => a.id))
+  type Node = Account & { depth: number }
+  const buildTree = (): Node[] => {
+    const childrenOf = new Map<string | null, Account[]>()
+    for (const a of filtered) {
+      const key = a.parentId && filteredIds.has(a.parentId) ? a.parentId : null
+      const arr = childrenOf.get(key) ?? []
+      arr.push(a)
+      childrenOf.set(key, arr)
+    }
+    // Sort each bucket by code.
+    for (const list of childrenOf.values()) list.sort((a, b) => a.code.localeCompare(b.code))
+    const out: Node[] = []
+    const visit = (parentId: string | null, depth: number) => {
+      const kids = childrenOf.get(parentId) ?? []
+      for (const k of kids) {
+        out.push({ ...k, depth })
+        visit(k.id, depth + 1)
+      }
+    }
+    visit(null, 0)
+    return out
+  }
+  const tree = buildTree()
+
   const canWrite = ['OWNER','ADMIN','ACCOUNTANT'].includes(role)
+  // Valid parent options: same-type accounts, excluding self and own descendants.
+  const descendantIdsOf = (id: string): Set<string> => {
+    const out = new Set<string>()
+    const queue: string[] = [id]
+    while (queue.length) {
+      const cur = queue.shift()!
+      for (const a of accounts) {
+        if (a.parentId === cur && !out.has(a.id)) {
+          out.add(a.id); queue.push(a.id)
+        }
+      }
+    }
+    return out
+  }
+  const parentOptions = accounts.filter(a => {
+    if (a.type !== form.type) return false             // parent must be same type
+    if (editingId && a.id === editingId) return false
+    if (editingId) {
+      const desc = descendantIdsOf(editingId)
+      if (desc.has(a.id)) return false
+    }
+    return true
+  })
+
+  // For edit lock messages.
+  const editing = editingId ? accounts.find(a => a.id === editingId) : null
+  const editingInUse = (editing?.usageCount ?? 0) > 0
 
   return (
     <div>
@@ -511,42 +602,88 @@ function AccountsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') =>
         {canWrite && (
           <div style={{ display: 'flex', gap: 8 }}>
             <button style={S.btn} onClick={() => setShowImport(true)}>↥ Import COA</button>
-            <button style={{ ...S.btn, ...S.btnPrimary }} onClick={() => setShowForm(o => !o)}>+ Add account</button>
+            <button style={{ ...S.btn, ...S.btnPrimary }} onClick={() => { cancel(); setShowForm(true) }}>+ Add account</button>
           </div>
         )}
       </div>
 
       {showForm && (
         <div style={{ ...S.card, marginBottom: 16 }}>
-          <div style={S.cardHeader}>New account</div>
+          <div style={S.cardHeader}>
+            {editingId ? `Edit account: ${editing?.code} — ${editing?.name}` : 'New account'}
+            {editingInUse && <span style={{ marginLeft: 12, fontSize: 11, fontWeight: 600, color: '#92400e', background: '#fef3c7', padding: '2px 8px', borderRadius: 4 }}>In use — code & type locked</span>}
+          </div>
           <div style={S.formGrid}>
-            <div><label style={S.label}>Account code</label><input style={S.input} value={form.code} onChange={e => setForm(f => ({...f,code:e.target.value}))} placeholder="1000" /></div>
-            <div><label style={S.label}>Account name</label><input style={S.input} value={form.name} onChange={e => setForm(f => ({...f,name:e.target.value}))} placeholder="Cash & Equivalents" /></div>
-            <div><label style={S.label}>Type</label>
-              <select style={S.select} value={form.type} onChange={e => setForm(f => ({...f,type:e.target.value}))}>
+            <div>
+              <label style={S.label}>Account code</label>
+              <input
+                style={{ ...S.input, ...(editingInUse ? { background: '#f8fafc', color: '#64748b' } : {}) }}
+                value={form.code} disabled={editingInUse}
+                onChange={e => setForm(f => ({...f,code:e.target.value}))}
+                placeholder="1000"
+              />
+            </div>
+            <div>
+              <label style={S.label}>Account name</label>
+              <input style={S.input} value={form.name} onChange={e => setForm(f => ({...f,name:e.target.value}))} placeholder="Cash & Equivalents" />
+            </div>
+            <div>
+              <label style={S.label}>Type</label>
+              <select
+                style={{ ...S.select, ...(editingInUse ? { background: '#f8fafc', color: '#64748b' } : {}) }}
+                value={form.type} disabled={editingInUse}
+                onChange={e => setForm(f => ({...f, type: e.target.value, parentId: ''}))}
+              >
                 {['ASSET','LIABILITY','EQUITY','REVENUE','EXPENSE','COGS'].map(t => <option key={t}>{t}</option>)}
               </select>
             </div>
-            <div><label style={S.label}>Sub-type</label><input style={S.input} value={form.subType} onChange={e => setForm(f => ({...f,subType:e.target.value}))} placeholder="Current" /></div>
+            <div>
+              <label style={S.label}>Sub-type</label>
+              <input style={S.input} value={form.subType} onChange={e => setForm(f => ({...f,subType:e.target.value}))} placeholder="e.g. Current Asset, Bank, Long-Term Debt" />
+            </div>
+            <div>
+              <label style={S.label}>Parent account (for ledger / subledger hierarchy)</label>
+              <select style={S.select} value={form.parentId} onChange={e => setForm(f => ({...f,parentId:e.target.value}))}>
+                <option value="">— (top-level)</option>
+                {parentOptions.map(p => <option key={p.id} value={p.id}>{p.code} — {p.name}</option>)}
+              </select>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'flex-end' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#475569', paddingBottom: 8 }}>
+                <input type="checkbox" checked={form.isBankAccount} onChange={e => setForm(f => ({...f, isBankAccount: e.target.checked}))} />
+                <span><strong>Is bank account</strong> — makes this account selectable in Bank Reconciliation</span>
+              </label>
+            </div>
           </div>
           <input style={{ ...S.input, marginBottom: 12 }} value={form.description} onChange={e => setForm(f => ({...f,description:e.target.value}))} placeholder="Description (optional)" />
           <div style={{ display:'flex',gap:8 }}>
-            <button style={{ ...S.btn, ...S.btnPrimary }} onClick={save}>Save account</button>
-            <button style={S.btn} onClick={() => setShowForm(false)}>Cancel</button>
+            <button style={{ ...S.btn, ...S.btnPrimary }} onClick={save}>{editingId ? 'Save changes' : 'Save account'}</button>
+            <button style={S.btn} onClick={cancel}>Cancel</button>
           </div>
         </div>
       )}
 
       <div style={S.card}>
         <table style={S.table}>
-          <thead><tr>{['Code','Account name','Type','Sub-type','Status'].map(h => <th key={h} style={S.th}>{h}</th>)}</tr></thead>
-          <tbody>{filtered.map(a => (
+          <thead><tr>{['Code','Account name','Type','Sub-type','Bank?','Usage',''].map(h => <th key={h} style={S.th}>{h}</th>)}</tr></thead>
+          <tbody>{tree.map(a => (
             <tr key={a.id}>
-              <td style={{ ...S.td, fontFamily: 'monospace', fontSize: 12 }}>{a.code}</td>
-              <td style={{ ...S.td, fontWeight: 500 }}>{a.name}</td>
+              <td style={{ ...S.td, fontFamily: 'monospace', fontSize: 12, paddingLeft: 8 + a.depth * 24 }}>
+                {a.depth > 0 && <span style={{ color: '#cbd5e1', marginRight: 6 }}>↳</span>}
+                {a.code}
+              </td>
+              <td style={{ ...S.td, fontWeight: a.depth === 0 ? 600 : 400 }}>{a.name}</td>
               <td style={S.td}><span style={{ ...S.typeBadge, background: TYPE_COLORS[a.type] + '18', color: TYPE_COLORS[a.type] }}>{a.type}</span></td>
-              <td style={S.td}>{a.subType ?? '—'}</td>
-              <td style={S.td}><span style={S.greenBadge}>Active</span></td>
+              <td style={{ ...S.td, fontSize: 12, color: '#64748b' }}>{a.subType ?? '—'}</td>
+              <td style={S.td}>{a.isBankAccount ? <span style={{ background: '#dbeafe', color: '#1d4ed8', padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600 }}>BANK</span> : <span style={{ color: '#cbd5e1' }}>—</span>}</td>
+              <td style={{ ...S.td, fontSize: 12, color: '#64748b', textAlign: 'right' }}>{a.usageCount ?? 0}</td>
+              <td style={{ ...S.td, textAlign: 'right' }}>
+                {canWrite && <>
+                  <button style={S.textBtn} onClick={() => startEdit(a)}>Edit</button>
+                  <span style={{ color: '#cbd5e1', margin: '0 8px' }}>·</span>
+                  <button style={{ ...S.textBtn, color: '#dc2626' }} onClick={() => del(a)}>Delete</button>
+                </>}
+              </td>
             </tr>
           ))}</tbody>
         </table>
@@ -4908,6 +5045,306 @@ function MisConfigPanel({ showToast, canEdit }: { showToast: (m: string, t?: 'ok
             {config.allowOverride ? 'Override ON (lenient)' : 'Override OFF (strict)'}
           </button>
         </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Vendor Reconciliation ────────────────────────────────────────────────────
+interface VendorRecon {
+  id: string
+  vendor: string
+  statementDate: string
+  statementBalance: number | string
+  internalBalance: number | string
+  difference: number | string
+  status: 'DRAFT' | 'FINALIZED'
+  notes: string | null
+  finalizedAt: string | null
+  createdAt: string
+  internalBalanceLive?: number
+  differenceLive?: number
+}
+
+function VendorReconPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => void }) {
+  const { currentEntity, role } = useApp()
+  const [recons, setRecons] = useState<VendorRecon[]>([])
+  const [vendors, setVendors] = useState<string[]>([])
+  const [showForm, setShowForm] = useState(false)
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const today = new Date().toISOString().slice(0, 10)
+  const [form, setForm] = useState({ vendor: '', statementDate: today, statementBalance: '', notes: '' })
+  const [preview, setPreview] = useState<{ internalBalance: number } | null>(null)
+  const canWrite = ['OWNER','ADMIN','ACCOUNTANT','AP_CLERK'].includes(role)
+
+  const load = useCallback(() => {
+    if (!currentEntity) return
+    fetch(`/api/vendor-recon?entityId=${currentEntity.id}`).then(r => r.json()).then(d => setRecons(d.reconciliations ?? []))
+    fetch(`/api/vendor-recon?entityId=${currentEntity.id}&vendors=1`).then(r => r.json()).then(d => setVendors(d.vendors ?? []))
+  }, [currentEntity])
+  useEffect(() => { load() }, [load])
+
+  // When vendor + date set, fetch a preview of the internal balance.
+  useEffect(() => {
+    if (!currentEntity || !form.vendor || !form.statementDate) { setPreview(null); return }
+    const sp = new URLSearchParams({ entityId: currentEntity.id, preview: '1', vendor: form.vendor, statementDate: form.statementDate })
+    fetch(`/api/vendor-recon?${sp}`).then(r => r.json()).then(d => {
+      if (d.error) setPreview(null)
+      else setPreview({ internalBalance: d.internalBalance })
+    })
+  }, [currentEntity, form.vendor, form.statementDate])
+
+  const create = async () => {
+    if (!currentEntity) return
+    if (!form.vendor) return showToast('Vendor required', 'err')
+    const res = await fetch('/api/vendor-recon', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        entityId: currentEntity.id,
+        vendor: form.vendor,
+        statementDate: form.statementDate,
+        statementBalance: parseFloat(form.statementBalance) || 0,
+        notes: form.notes || undefined,
+      }),
+    })
+    if (res.ok) {
+      showToast('Reconciliation created')
+      setShowForm(false)
+      setForm({ vendor: '', statementDate: today, statementBalance: '', notes: '' })
+      load()
+    } else { const d = await res.json(); showToast(d.error ?? 'Error', 'err') }
+  }
+
+  if (selectedId) {
+    return <VendorReconDetail id={selectedId} onClose={() => { setSelectedId(null); load() }} canWrite={canWrite} showToast={showToast} />
+  }
+
+  const previewDiff = preview ? (parseFloat(form.statementBalance) || 0) - preview.internalBalance : 0
+
+  return (
+    <div>
+      <div style={S.pageActions}>
+        <div style={{ fontSize: 13, color: '#475569', lineHeight: 1.5 }}>
+          Reconcile vendor statements against your internal AP records. Track differences and audit them before finalizing.
+        </div>
+        {canWrite && <button style={{ ...S.btn, ...S.btnPrimary }} onClick={() => setShowForm(o => !o)}>+ New reconciliation</button>}
+      </div>
+
+      {showForm && (
+        <div style={{ ...S.card, marginBottom: 16 }}>
+          <div style={S.cardHeader}>New vendor reconciliation</div>
+          {vendors.length === 0 && (
+            <div style={{ padding: 12, background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 6, fontSize: 13, color: '#92400e', marginBottom: 12 }}>
+              No vendors found in your AP module. Create at least one vendor invoice first, then come back.
+            </div>
+          )}
+          <div style={S.formGrid}>
+            <div>
+              <label style={S.label}>Vendor</label>
+              <select style={S.select} value={form.vendor} onChange={e => setForm(f => ({...f, vendor: e.target.value}))}>
+                <option value="">Select…</option>
+                {vendors.map(v => <option key={v} value={v}>{v}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={S.label}>Statement date</label>
+              <input style={S.input} type="date" value={form.statementDate} onChange={e => setForm(f => ({...f, statementDate: e.target.value}))} />
+            </div>
+            <div>
+              <label style={S.label}>Vendor's statement balance</label>
+              <input style={S.input} value={form.statementBalance} onChange={e => setForm(f => ({...f, statementBalance: e.target.value}))} placeholder="0.00" />
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
+              {preview && form.vendor && (
+                <div style={{ padding: 10, background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6, fontSize: 12, lineHeight: 1.6 }}>
+                  Internal AP balance: <strong>${fmt(preview.internalBalance)}</strong><br />
+                  Difference (their − yours): <strong style={{ color: Math.abs(previewDiff) < 0.01 ? '#16a34a' : '#dc2626' }}>${fmt(previewDiff)}</strong>
+                </div>
+              )}
+            </div>
+          </div>
+          <textarea
+            style={{ width: '100%', minHeight: 60, padding: 8, border: '1px solid #e2e8f0', borderRadius: 6, marginTop: 12, fontFamily: 'inherit', fontSize: 13 }}
+            placeholder="Notes (optional): describe known timing differences, disputed items, etc."
+            value={form.notes}
+            onChange={e => setForm(f => ({...f, notes: e.target.value}))}
+          />
+          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+            <button style={{ ...S.btn, ...S.btnPrimary }} onClick={create} disabled={!form.vendor}>Create reconciliation</button>
+            <button style={S.btn} onClick={() => setShowForm(false)}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      <div style={S.card}>
+        <table style={S.table}>
+          <thead><tr>{['Vendor','Statement date','Statement bal.','Internal bal.','Difference','Status','Created'].map(h => <th key={h} style={S.th}>{h}</th>)}</tr></thead>
+          <tbody>
+            {recons.length === 0 && <tr><td colSpan={7} style={{ ...S.td, textAlign: 'center', color: '#94a3b8' }}>No vendor reconciliations yet</td></tr>}
+            {recons.map(r => {
+              const diff = Number(r.difference)
+              return (
+                <tr key={r.id} style={{ cursor: 'pointer' }} onClick={() => setSelectedId(r.id)}>
+                  <td style={{ ...S.td, fontWeight: 500 }}>{r.vendor}</td>
+                  <td style={S.td}>{fmtDate(r.statementDate)}</td>
+                  <td style={{ ...S.td, textAlign: 'right', fontFamily: 'monospace' }}>${fmt(Number(r.statementBalance))}</td>
+                  <td style={{ ...S.td, textAlign: 'right', fontFamily: 'monospace' }}>${fmt(Number(r.internalBalance))}</td>
+                  <td style={{ ...S.td, textAlign: 'right', fontFamily: 'monospace', color: Math.abs(diff) < 0.01 ? '#16a34a' : '#dc2626', fontWeight: 600 }}>${fmt(diff)}</td>
+                  <td style={S.td}>
+                    <span style={{ background: r.status === 'FINALIZED' ? '#f0fdf4' : '#fef3c7', color: r.status === 'FINALIZED' ? '#166534' : '#92400e', padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600 }}>
+                      {r.status}
+                    </span>
+                  </td>
+                  <td style={{ ...S.td, fontSize: 12, color: '#64748b' }}>{fmtDate(r.createdAt)}</td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+function VendorReconDetail({ id, onClose, canWrite, showToast }: {
+  id: string; onClose: () => void; canWrite: boolean
+  showToast: (m: string, t?: 'ok'|'err') => void
+}) {
+  const { currentEntity } = useApp()
+  const [rec, setRec] = useState<VendorRecon | null>(null)
+  const [editStmt, setEditStmt] = useState('')
+  const [editNotes, setEditNotes] = useState('')
+  const [editing, setEditing] = useState(false)
+
+  const load = useCallback(() => {
+    if (!currentEntity) return
+    fetch(`/api/vendor-recon?entityId=${currentEntity.id}&id=${id}`).then(r => r.json()).then(d => {
+      setRec(d)
+      setEditStmt(String(d.statementBalance))
+      setEditNotes(d.notes ?? '')
+    })
+  }, [currentEntity, id])
+  useEffect(() => { load() }, [load])
+
+  const saveEdit = async () => {
+    if (!currentEntity || !rec) return
+    const res = await fetch('/api/vendor-recon', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'edit', entityId: currentEntity.id, id,
+        statementBalance: parseFloat(editStmt) || 0,
+        notes: editNotes || null,
+      }),
+    })
+    if (res.ok) { showToast('Saved'); setEditing(false); load() }
+    else { const d = await res.json(); showToast(d.error ?? 'Error', 'err') }
+  }
+
+  const finalize = async () => {
+    if (!currentEntity || !rec) return
+    if (!confirm('Finalize this reconciliation? Recomputes the internal balance from current AP data and locks it. You can reopen later if needed.')) return
+    const res = await fetch('/api/vendor-recon', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'finalize', entityId: currentEntity.id, id, notes: editNotes || undefined }),
+    })
+    if (res.ok) { showToast('Finalized'); load() }
+    else { const d = await res.json(); showToast(d.error ?? 'Error', 'err') }
+  }
+
+  const reopen = async () => {
+    if (!currentEntity || !rec) return
+    if (!confirm('Reopen this reconciliation for editing?')) return
+    const res = await fetch('/api/vendor-recon', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'reopen', entityId: currentEntity.id, id }),
+    })
+    if (res.ok) { showToast('Reopened'); load() }
+    else { const d = await res.json(); showToast(d.error ?? 'Error', 'err') }
+  }
+
+  const del = async () => {
+    if (!currentEntity || !rec) return
+    if (!confirm('Delete this reconciliation? Cannot be undone.')) return
+    const res = await fetch(`/api/vendor-recon?entityId=${currentEntity.id}&id=${id}`, { method: 'DELETE' })
+    if (res.ok) { showToast('Deleted'); onClose() }
+    else { const d = await res.json(); showToast(d.error ?? 'Error', 'err') }
+  }
+
+  if (!rec) return <div style={{ padding: 30, textAlign: 'center', color: '#94a3b8' }}>Loading…</div>
+
+  // For DRAFT, show live vs stored difference if AP changed in the meantime.
+  const showLive = rec.status === 'DRAFT' && rec.internalBalanceLive !== undefined
+  const liveInternal = rec.internalBalanceLive ?? Number(rec.internalBalance)
+  const liveDiff = rec.differenceLive ?? Number(rec.difference)
+
+  return (
+    <div>
+      <div style={S.pageActions}>
+        <button style={S.btn} onClick={onClose}>← Back to list</button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          {canWrite && rec.status === 'DRAFT' && <>
+            <button style={S.btn} onClick={() => setEditing(o => !o)}>{editing ? 'Cancel edit' : 'Edit'}</button>
+            <button style={{ ...S.btn, color: '#dc2626', borderColor: '#fecaca' }} onClick={del}>Delete</button>
+            <button style={{ ...S.btn, ...S.btnPrimary }} onClick={finalize}>Finalize</button>
+          </>}
+          {canWrite && rec.status === 'FINALIZED' && (
+            <button style={S.btn} onClick={reopen}>Reopen</button>
+          )}
+        </div>
+      </div>
+
+      <div style={S.card}>
+        <div style={S.cardHeader}>
+          {rec.vendor} — Statement {fmtDate(rec.statementDate)}
+          <span style={{ marginLeft: 12, background: rec.status === 'FINALIZED' ? '#f0fdf4' : '#fef3c7', color: rec.status === 'FINALIZED' ? '#166534' : '#92400e', padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600 }}>
+            {rec.status}
+          </span>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16, padding: '4px 4px 16px' }}>
+          <div>
+            <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.06, marginBottom: 4 }}>Vendor's statement</div>
+            {editing
+              ? <input style={S.input} value={editStmt} onChange={e => setEditStmt(e.target.value)} />
+              : <div style={{ fontSize: 22, fontWeight: 700, fontFamily: 'monospace' }}>${fmt(Number(rec.statementBalance))}</div>
+            }
+          </div>
+          <div>
+            <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.06, marginBottom: 4 }}>Your internal AP balance</div>
+            <div style={{ fontSize: 22, fontWeight: 700, fontFamily: 'monospace', color: '#475569' }}>${fmt(Number(rec.internalBalance))}</div>
+            {showLive && Math.abs(liveInternal - Number(rec.internalBalance)) > 0.01 && (
+              <div style={{ fontSize: 11, color: '#d97706', marginTop: 2 }}>Live: ${fmt(liveInternal)} (AP changed since recon created)</div>
+            )}
+          </div>
+          <div>
+            <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.06, marginBottom: 4 }}>Difference (theirs − yours)</div>
+            <div style={{ fontSize: 22, fontWeight: 700, fontFamily: 'monospace', color: Math.abs(Number(rec.difference)) < 0.01 ? '#16a34a' : '#dc2626' }}>${fmt(Number(rec.difference))}</div>
+            {showLive && Math.abs(liveDiff - Number(rec.difference)) > 0.01 && (
+              <div style={{ fontSize: 11, color: '#d97706', marginTop: 2 }}>Live: ${fmt(liveDiff)}</div>
+            )}
+          </div>
+        </div>
+
+        <div style={{ marginTop: 8 }}>
+          <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.06, marginBottom: 4 }}>Notes</div>
+          {editing
+            ? <textarea style={{ width: '100%', minHeight: 80, padding: 8, border: '1px solid #e2e8f0', borderRadius: 6, fontFamily: 'inherit', fontSize: 13 }} value={editNotes} onChange={e => setEditNotes(e.target.value)} />
+            : <div style={{ fontSize: 13, color: '#475569', whiteSpace: 'pre-wrap' }}>{rec.notes ?? '—'}</div>
+          }
+        </div>
+
+        {editing && (
+          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+            <button style={{ ...S.btn, ...S.btnPrimary }} onClick={saveEdit}>Save</button>
+            <button style={S.btn} onClick={() => setEditing(false)}>Cancel</button>
+          </div>
+        )}
+
+        {rec.finalizedAt && (
+          <div style={{ fontSize: 11, color: '#64748b', marginTop: 14, paddingTop: 12, borderTop: '1px solid #e2e8f0' }}>
+            Finalized {fmtDate(rec.finalizedAt)}
+          </div>
+        )}
       </div>
     </div>
   )

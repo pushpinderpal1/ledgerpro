@@ -1,170 +1,116 @@
-# LedgerPro — MIS / Multi-Dimensional Accounting
+# LedgerPro — COA improvements + Vendor Recon
 
-Adds opt-in MIS (department) coding per entity, with configurable
-strictness, a master list of MIS codes, and two new department-level reports.
+Addresses four issues in one consolidated deploy:
 
-Entities that don't enable MIS see no UI changes — the system behaves
-exactly as before.
+1. **Chart of Accounts editing** — every account now has an Edit button.
+   Code and type lock once any journal line uses the account (changes break
+   audit/reports); everything else stays editable forever.
+2. **Bank account flag exposed** — Add/Edit form now has an "Is bank account"
+   checkbox. Bank Reconciliation filters by this flag (was already correct in
+   code, just no UI to set it).
+3. **COA hierarchy (ledger / subledger)** — Add/Edit form has a Parent Account
+   dropdown. The Chart of Accounts list renders the hierarchy as an indented
+   tree. Cycle protection at API layer.
+4. **Vendor Reconciliation** — new sidebar item alongside Bank Recon. Pick a
+   vendor, enter their statement balance, system computes your internal AP
+   balance and the difference. DRAFT → FINALIZED flow with reopen + delete.
 
 ## What's in this zip
 
-- `prisma/schema.prisma` — adds 3 columns to LegalEntity (`misEnabled`,
-  `misRequiredForTypes`, `misAllowOverride`), adds `MisCode` model,
-  adds `misCodeId` FK on JournalLine.
-- `prisma/migrations/0007_mis_dimensions/migration.sql` — additive,
-  fully safe to deploy on existing data.
-- `src/lib/mis/policy.ts` — pure policy logic (no DB), shared between
-  server and client.
-- `src/lib/mis/index.ts` — DB-backed helpers used during posting.
-- `src/lib/reports/index.ts` — replaces existing. Adds
-  `profitAndLossByDepartment` and `trialBalanceByDepartment`.
-- `src/app/api/mis-codes/route.ts` — full CRUD with soft-delete logic.
-- `src/app/api/mis-config/route.ts` — get/set the per-entity config.
-- `src/app/api/journals/route.ts` — replaces existing. Validates MIS
-  policy server-side before persisting.
-- `src/app/api/reports/route.ts` — replaces existing. Adds
-  `pnl-by-department` and `trial-balance-by-department` report types.
-- `src/app/page.tsx` — replaces existing. Adds MIS sidebar item
-  (Codes + Configuration tabs), adds MIS column to journal entry form
-  with live validation preview.
-- `tests/mis-policy.test.ts` — 14 unit tests, 137 total passing.
+- `prisma/schema.prisma` — adds `VendorReconciliation` model + `VendorReconStatus`
+  enum. Account model unchanged (it already had `parentId` and `isBankAccount`).
+- `prisma/migrations/0008_coa_and_vendor_recon/migration.sql`:
+  - **Auto-backfill**: sets `isBankAccount = true` on existing ASSET accounts
+    whose subType is "Bank" / "Cash" or whose name starts with "Cash" / "Bank".
+    Existing data immediately shows up in Bank Recon without manual edits.
+  - Creates the `vendor_reconciliations` table.
+- `src/lib/vendor-recon/index.ts` — engine: `computeInternalBalance`, `listVendors`
+- `src/app/api/accounts/route.ts` — replaces existing. GET returns usage count;
+  PATCH refuses code/type changes if account in use; cycle detection on parentId;
+  audit logging on every change.
+- `src/app/api/vendor-recon/route.ts` — full CRUD + finalize/reopen actions +
+  internal-balance preview endpoint
+- `src/app/page.tsx` — replaces existing. New AccountsPage (edit + hierarchy +
+  bank flag), new VendorReconPage with detail view
 
 ## Deploy steps
 
-1. Extract zip at root of your `ledgerpro` repo
-2. Commit + push:
-   ```
-   git add -A
-   git commit -m "MIS / multi-dimensional accounting"
-   git push
-   ```
-3. Railway applies migration `0007_mis_dimensions`. No new dependencies,
-   no env vars.
-
-## The policy model
-
-Two-layer rules:
-
-| Master enabled? | Allow override? | Account type required? | Behavior |
-|---|---|---|---|
-| ❌ No | — | — | MIS field hidden everywhere |
-| ✔ Yes | ✔ Yes | Any | Field shown — warnings shown but never blocks |
-| ✔ Yes | ❌ No | ✔ Yes | Field shown — **blocks posting** if blank |
-| ✔ Yes | ❌ No | ❌ No | Field shown — optional for that line |
-
-Default required-for types when first enabled: **EXPENSE, REVENUE, COGS**
-(the typical P&L accounts). Adjust on the Configuration tab.
-
-## How to use it
-
-### Setup (OWNER / ADMIN)
-
-1. **MIS / Departments** in sidebar → **Configuration** tab
-2. Toggle "Enable MIS coding on this entity" → ON
-3. Pick which account types require an MIS code (chip buttons —
-   tap to toggle). Default: EXPENSE, REVENUE, COGS.
-4. Decide override behavior:
-   - **Override OFF (strict)** — required lines BLOCK posting if missing
-   - **Override ON (lenient)** — required lines show a warning but allow posting
-
-### Create the codes (OWNER / ADMIN / ACCOUNTANT)
-
-1. **Codes** tab
-2. **+ New code** — enter a code (e.g. `DEPT01`) and a department name
-   (e.g. `Sales — North`)
-3. Repeat for each department. Soft cap is 10 (warning shown above 10,
-   not blocked).
-
-### Use them in journal entries
-
-1. **Journal Entries** → **+ New entry**
-2. The "MIS code" column appears in the lines table
-3. When entering an account, if the policy requires MIS for that type:
-   - **Strict**: the MIS dropdown shows red border; posting blocked
-   - **Lenient**: the MIS dropdown shows amber border; posting allowed
-     but a warning lists the affected lines
-4. Selecting an MIS code clears the warning for that line
-
-### Run department reports
-
-Add `?type=pnl-by-department` or `?type=trial-balance-by-department`
-to your existing reports API URL, with optional `from` and `to` dates.
-The response is a cross-tab:
-
 ```
-{
-  "columns": [
-    { "id": "code_abc", "code": "DEPT01", "department": "Sales — North" },
-    { "id": "code_def", "code": "DEPT02", "department": "Sales — South" },
-    { "id": "_unallocated", "code": "(Unallocated)", "department": "No MIS code" }
-  ],
-  "rows": [
-    { "code": "6100", "name": "Rent Expense", "type": "EXPENSE",
-      "byColumn": { "code_abc": 1200, "code_def": 800, "_unallocated": 0 },
-      "total": 2000 }
-  ],
-  "totals": { "code_abc": 1200, "code_def": 800, "_unallocated": 0 }
-}
+cd C:\ledgerpro
+# extract the zip, overwriting existing files
+git add -A
+git commit -m "COA hierarchy/edit + Vendor Reconciliation"
+git push
 ```
 
-Lines that don't have an MIS code go into the `(Unallocated)` column so
-the totals always tie back to the standard P&L / TB.
+No new dependencies, no env vars. Railway applies migration `0008_coa_and_vendor_recon`.
 
-The frontend integration of these into the Reports page is intentionally
-left to a follow-up — the API is in place so you can call it from
-custom dashboards or spreadsheets in the meantime.
+## How to use
 
-## What stays the same
+### Editing existing accounts
 
-- Entities without MIS enabled — no visible change anywhere
-- Existing journal entries (created before MIS was enabled) — no data
-  migration needed; their `misCodeId` is just NULL
-- Reports — all 10 existing reports unchanged; two new department
-  reports added alongside
-- Other modules (Payments, Recon, AP, Fixed Assets, etc.) — no MIS
-  integration in this pass. Their journals create entries with NULL
-  misCodeId, which is fine because MIS is required *per account type*
-  rather than per source
+Accounts → Click **Edit** on any row. The form opens pre-filled. If the account
+is in use (right-most column shows usage count > 0), Code and Type fields are
+visibly locked. Name, sub-type, parent, description, and "Is bank account" stay
+editable.
 
-## Soft-delete behavior
+### Marking bank accounts
 
-If you try to delete an MIS code that's been used in journal entries:
-- System soft-deletes (sets `isActive = false`) so historical lines keep
-  their tag
-- The dropdown on new entries no longer shows it
-- The Codes tab can show it via "Show inactive" toggle, with "Reactivate"
-  option
+When editing, tick **Is bank account**. The row gets a blue `BANK` badge.
+Bank Recon will now offer that account in its dropdown.
 
-If you delete an unused MIS code:
-- Hard-deleted
+After deploy, existing accounts named "Cash" / "Bank" or with those subTypes
+are **already flagged automatically** by the migration.
+
+### Building hierarchy (ledger / subledger)
+
+On Add or Edit, pick a **Parent account** from the dropdown. The dropdown only
+shows same-type accounts and excludes the account's own descendants. The
+Chart of Accounts list renders parents flush-left and children indented with a
+`↳` connector.
+
+### Vendor Reconciliation
+
+1. Sidebar → **Vendor Recon**
+2. **+ New reconciliation** → pick a vendor (dropdown from your existing AP
+   invoices) → enter the statement date → enter the vendor's stated balance
+3. A preview panel shows your internal AP balance and the difference live
+4. **Create reconciliation** → row appears in the list with status `DRAFT`
+5. Click a row to open detail → review numbers, add notes about timing
+   differences / disputed items → **Finalize** when satisfied
+
+**Finalize** recomputes internal balance from current AP data at the moment of
+finalize and locks the record. You can **Reopen** later if you need to adjust.
+
+For DRAFT reconciliations, the detail view shows a "Live" badge if your AP has
+changed since the reconciliation was created, so you know to refresh before
+finalizing.
+
+### Permissions
+
+- Chart of Accounts edit: OWNER / ADMIN / ACCOUNTANT
+- Vendor Recon: OWNER / ADMIN / ACCOUNTANT / AUDITOR (read) + AP_CLERK (write)
 
 ## Audit trail
 
-All MIS changes are audited:
-- `MIS_CONFIG_UPDATED` — changes to enable / requiredForTypes / allowOverride
-- `MIS_CODE_CREATED`, `MIS_CODE_UPDATED`, `MIS_CODE_DEACTIVATED`, `MIS_CODE_DELETED`
+All actions log to AuditLog:
+- `ACCOUNT_CREATED`, `ACCOUNT_UPDATED`, `ACCOUNT_DEACTIVATED`, `ACCOUNT_DELETED`
+- `VENDOR_RECON_CREATED`, `VENDOR_RECON_UPDATED`, `VENDOR_RECON_FINALIZED`,
+  `VENDOR_RECON_REOPENED`, `VENDOR_RECON_DELETED`
+
+## What's not in this pass
+
+- **Vendor recon line-by-line matching** — v1 reconciles balance vs balance
+  only. To match individual invoices against statement lines item-by-item,
+  needs a second model (`VendorReconLine`) and a richer UI. Reasonable
+  follow-up if balance-level isn't enough.
+- **Vendor statement file upload** — currently the user types the balance.
+  PDF/CSV statement parsing is a separate feature.
+- **Audit log entries for Account create/update from the COA Import feature**
+  — those already audit as `COA_IMPORTED`, not the per-row events above.
+  Acceptable since the import is a bulk operation.
 
 ## Tests
 
-14 new tests pass:
-- Parse / serialize the comma-separated requiredForTypes string
-- Validation skipped when MIS disabled
-- Strict mode blocks missing codes on required types
-- Lenient mode downgrades errors to warnings
-- Non-required types ignored
-- Whitespace-only codes treated as missing
-- Multiple bad lines all reported
-
-137 total tests pass.
-
-## Known limits in this pass
-
-- Other posting surfaces (AP invoices, Payments, Recon adjustments,
-  Depreciation runs, Disposals) post journals with NULL misCodeId.
-  If you want those to require MIS, that's a follow-up — they need
-  per-module UI changes since the user doesn't see line-by-line dropdowns
-  on those screens.
-- Department reports have API support but no dedicated UI page yet.
-- The soft cap of 10 codes is a frontend warning only — no hard limit.
-- Codes can be edited but the `code` field itself is immutable
-  (department name and description can change).
+137 unchanged. The new code is mostly DB+UI plumbing; no pure-logic changes
+warranted new tests beyond what already exists.
