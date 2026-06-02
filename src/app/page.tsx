@@ -2872,7 +2872,8 @@ function ReconPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => vo
       <div>
         <div style={S.pageActions}>
           <button style={S.btn} onClick={() => { setActiveId(null); setState(null) }}>← Back to list</button>
-          <div style={{ display:'flex', gap:8 }}>
+          <div style={{ display:'flex', gap:8, flexWrap: 'wrap' }}>
+            <ReconExportMenu activeId={activeId!} />
             {!isLocked && canWrite && state.statementLines.length > 0 && <button style={S.btn} onClick={autoMatch}>Auto-match statement</button>}
             {!isLocked && canWrite && <button style={{ ...S.btn, ...S.btnPrimary, opacity: summary.isBalanced ? 1 : 0.5 }} onClick={finalize} disabled={!summary.isBalanced}>Finalize reconciliation</button>}
             {isLocked && <span style={{ ...S.greenBadge }}>COMPLETED</span>}
@@ -3096,6 +3097,54 @@ interface PeriodLock {
   reason: string | null
   releasedAt: string | null
   releasedBy: string | null
+}
+
+// ─── Export menu for bank reconciliation reports ─────────────────────────────
+function ReconExportMenu({ activeId }: { activeId: string }) {
+  const { currentEntity } = useApp()
+  const [open, setOpen] = useState(false)
+
+  const download = (format: 'xlsx' | 'pdf', detail: 'detailed' | 'summary') => {
+    if (!currentEntity) return
+    const sp = new URLSearchParams({
+      entityId: currentEntity.id, id: activeId, format, detail,
+    })
+    // Open in a new tab so the browser handles the file download naturally.
+    window.open(`/api/recon/export?${sp}`, '_blank')
+    setOpen(false)
+  }
+
+  return (
+    <div style={{ position: 'relative' }}>
+      <button style={S.btn} onClick={() => setOpen(o => !o)}>Export ▾</button>
+      {open && (
+        <>
+          <div style={{ position: 'fixed', inset: 0, zIndex: 999 }} onClick={() => setOpen(false)} />
+          <div style={{
+            position: 'absolute', top: '100%', right: 0, marginTop: 4,
+            background: '#fff', border: '1px solid #e2e8f0', borderRadius: 6,
+            boxShadow: '0 8px 24px rgba(15,23,42,0.12)', zIndex: 1000,
+            minWidth: 240, padding: 6,
+          }}>
+            <div style={{ padding: '6px 10px', fontSize: 10, fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.06 }}>Excel (.xlsx)</div>
+            <div style={menuItemStyle} onClick={() => download('xlsx', 'detailed')}>Detailed — full transaction list</div>
+            <div style={menuItemStyle} onClick={() => download('xlsx', 'summary')}>Summary — reconciliation totals only</div>
+            <div style={{ height: 1, background: '#f1f5f9', margin: '4px 0' }} />
+            <div style={{ padding: '6px 10px', fontSize: 10, fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.06 }}>PDF</div>
+            <div style={menuItemStyle} onClick={() => download('pdf', 'detailed')}>Detailed — full transaction list</div>
+            <div style={menuItemStyle} onClick={() => download('pdf', 'summary')}>Summary — reconciliation totals only</div>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+const menuItemStyle: React.CSSProperties = {
+  padding: '8px 10px',
+  fontSize: 13,
+  cursor: 'pointer',
+  borderRadius: 4,
 }
 
 // ─── Diagnostic empty state for bank rec ─────────────────────────────────────

@@ -1,187 +1,135 @@
-# LedgerPro — Transaction Posting group + Receipts + configurable Payment Modes
+# LedgerPro — Bank Reconciliation Reports (Excel + PDF, Detailed + Summary)
 
-Three things in one bundle:
+Four exports from any bank reconciliation:
 
-1. **Sidebar restructure** — Journal Entries and Payments moved into a new
-   "Transaction Posting" group, joined by the new Receipts page
-2. **Receipts module** — record incoming money (customer payments, refunds,
-   interest received, etc.). Each receipt creates a posted journal entry
-3. **Configurable Payment Modes** — Setup → Payment Modes lets you manage
-   the list of payment methods. Defaults seeded automatically.
+|         | Detailed                                | Summary                    |
+|---------|-----------------------------------------|----------------------------|
+| Excel   | Header + math + transaction table       | Header + reconciliation math |
+| PDF     | Header + math + transaction table       | Header + reconciliation math |
+
+## Tick convention (per request)
+
+- **`✓`** + clearing date — line is cleared and the reconciliation is
+  **COMPLETED** (locked)
+- **`*`** — line is ticked but the reconciliation is still **IN_PROGRESS**
+- *(blank)* — line is uncleared
+
+Both formats use the same convention. Legend appears at the bottom of the
+detailed report.
 
 ## What's in this zip
 
-- `prisma/schema.prisma` — adds `PaymentMode`, `Receipt` models, 2 enums,
-  back-relations on LegalEntity, Account, JournalEntry
-- `prisma/migrations/0011_receipts_and_modes/migration.sql` — one additive
-  migration; creates 2 tables + 2 enums
-- `src/lib/auth/index.ts` — adds permission keys: `receipts:read/write`,
-  `payment-modes:read/write`
-- `src/app/api/payment-modes/route.ts` — CRUD with **lazy default seeding**
-  (first read auto-creates Cheque, Bank Transfer, ACH, Wire, Credit Card,
-  Cash, Other)
-- `src/app/api/receipts/route.ts` — full CRUD + void; each POST creates a
-  balanced JE in a single transaction
-- `src/app/page.tsx` — sidebar restructure + 2 new pages (ReceiptsPage,
-  PaymentModesPage)
+- `package.json` — adds `exceljs` (Excel generation) and `pdfkit` (PDF
+  generation) as runtime dependencies, plus `@types/pdfkit` for TS. All
+  pure JavaScript, no native binaries, no Railway build surprises.
+- `src/lib/recon/report-data.ts` — pure data shaper. Given the
+  reconciliation state, produces the report payload (header, summary
+  math, transaction rows with tick column).
+- `src/lib/recon/render.ts` — two renderers, `renderReconExcel(data, detail)`
+  and `renderReconPdf(data, detail)`. Both return a `Buffer`.
+- `src/app/api/recon/export/route.ts` — `GET /api/recon/export?entityId=&id=&format=xlsx|pdf&detail=detailed|summary`.
+  Returns the file as a binary attachment with proper Content-Type.
+- `src/app/page.tsx` — adds an **Export ▾** dropdown to the reconciliation
+  detail toolbar with four download links.
+- `tests/recon-report.test.ts` — 7 unit tests on the report-data shaper
+  (tick logic, outstanding-items math, book-balance math, sort).
 
-## New sidebar layout
+## Reconciliation math (both reports)
 
 ```
-Dashboard
+Beginning balance (per books)            $X,XXX.XX
+Statement ending balance (per bank)      $X,XXX.XX
+Cleared balance (in this recon)          $X,XXX.XX        ← top border
 
-BOOKS
-  Chart of Accounts
-  Period Locks
+Outstanding items
+  Outstanding deposits (uncleared receipts)    $X,XXX.XX
+  Outstanding withdrawals (uncleared payments) $X,XXX.XX
 
-TRANSACTION POSTING            ◄── NEW GROUP
-  Journal Entries              ◄── moved here
-  Payments                     ◄── moved here
-  Receipts                     ◄── NEW
+Adjusted bank balance                    $X,XXX.XX        ← top border
+Book balance                             $X,XXX.XX
 
-PAYABLES
-  AP Tracker
-  Expense Requests
+Difference                               $X,XXX.XX        ← top border
+                                                          (green if zero,
+                                                           red otherwise)
 
-RECONCILIATIONS
-  Bank Recon
-  Vendor Recon
-
-REPORTS
-  Reports
-  Custom Statements
-
-ASSETS & PAYROLL
-  Fixed Assets
-  Payroll
-  W-2 / 1040-K
-
-PLANNING & MIS
-  Budget & MIS
-  MIS / Departments
-
-SETUP
-  Group Structure
-  FX Rates
-  Payment Modes               ◄── NEW
-  QB IIF
-
-ADMIN
-  Audit Trail
-  User Management
-  Settings
+✓ Reconciliation is balanced  /  ⚠ Out of balance — investigate and correct
 ```
 
-## How Receipts work
+The detailed variant adds a transaction table after the math block with:
 
-### Recording a receipt
+| Date | Reference | Description | Deposit (Dr) | Withdrawal (Cr) | Cleared |
+|------|-----------|-------------|--------------|-----------------|---------|
 
-1. Sidebar → **Transaction Posting → Receipts** → **+ New receipt**
-2. Fill:
-   - **Received from** — payer name (customer/client)
-   - **Receipt date**
-   - **Amount**
-   - **Payment mode** — dropdown sourced from Payment Modes (filtered to
-     RECEIPT or BOTH kind only)
-   - **Deposit account (DR)** — bank/cash account; dropdown filtered to
-     `isBankAccount` accounts
-   - **Credit account (CR)** — revenue or AR account
-   - **Reference** (cheque #, transaction ID, etc.) — optional
-   - **Description** — optional
-3. Live posting preview shows you the JE that will be created
-4. Click **Record receipt** → API creates:
-   - A `Receipt` row with auto-numbered `RCP-YYYY-NNNN`
-   - A posted journal entry (`RCP-YYYY-NNNN`) with two lines:
-     - DR deposit account, amount
-     - CR credit account, amount
-5. Toast confirms with the JE ref
+Where the **Cleared** column shows `✓ <date>`, `*`, or blank per the tick
+convention. Footer row shows total debits + credits.
 
-### Voiding a receipt
+## How to use it after deploy
 
-Click **Void** on a posted row → confirm → API creates a reversing JE
-(`RCPV-YYYY-NNNN`) that cancels the original posting. The receipt is
-marked VOID; both JE refs are linked for audit.
+1. Sidebar → **Reconciliations → Bank Recon**
+2. Open any reconciliation (or start a new one)
+3. Click **Export ▾** at the top right of the detail view → 4 options:
+   - **Excel — Detailed**
+   - **Excel — Summary**
+   - **PDF — Detailed**
+   - **PDF — Summary**
+4. File downloads to your browser's Downloads folder
 
-### Receipts in reports
-
-Since receipts post real journal entries, they show up everywhere:
-- Trial Balance — deposit account increases, credit account decreases
-- General Ledger — the JE lines appear under both accounts
-- **Bank Recon** — the deposit line will appear in the next bank recon
-  on that account (uncleared by default, ready to tick)
-
-## How Payment Modes work
-
-Setup → **Payment Modes** shows the configured catalog.
-
-**Default seeded modes** (created the first time you visit the page):
-- Cheque · Bank Transfer · ACH · Wire · Credit Card · Cash · Other
-
-For each mode you can edit (if you have ADMIN/OWNER role):
-- **Used for**: Both / Payments only / Receipts only
-- **Active** — uncheck to hide from new transactions without deleting
-- **Sort order** — lower numbers appear first in dropdowns
-- **Delete** — only if no receipts reference the mode (otherwise deactivate)
-
-Add custom modes (e.g. "PayPal", "Stripe", "Crypto") via **+ New mode**.
-
-## Permissions
-
-| Action                     | OWNER | ADMIN | ACCOUNTANT | AUDITOR |
-|----------------------------|:-----:|:-----:|:----------:|:-------:|
-| View receipts              |  ✓    |  ✓    |    ✓       |    ✓    |
-| Create / void receipt      |  ✓    |  ✓    |    ✓       |    ✗    |
-| View payment modes         |  ✓    |  ✓    |    ✓       |    ✓    |
-| Add / edit payment modes   |  ✓    |  ✓    |    ✗       |    ✗    |
+Filename format: `bank-recon-{code}-{statement-date}-{detail}.{ext}`
+e.g. `bank-recon-1001-2026-06-30-detailed.pdf`
 
 ## Deploy
 
 ```
 cd C:\ledgerpro
 git add -A
-git commit -m "Receipts module + configurable payment modes + sidebar regroup"
+git commit -m "Bank rec reports: Excel + PDF, Detailed + Summary"
 git push
 ```
 
-Railway runs migration `0011_receipts_and_modes`. No new dependencies, no
-env vars. The default payment modes are seeded **lazily** — the first
-person to visit Setup → Payment Modes (or post a receipt) for an entity
-will trigger the seeding for that entity.
+Railway will run `npm install` to pick up the two new dependencies
+(`exceljs` ~300 KB + `pdfkit` ~500 KB; both pure JS). No schema change,
+no migration, no env vars.
 
 ## After deploy — verify
 
-1. Sidebar reorganization: Journal Entries + Payments + Receipts now grouped
-   under "Transaction Posting"
-2. Setup → **Payment Modes** → see 7 seeded modes
-3. Transaction Posting → **Receipts** → **+ New receipt**:
-   - Pick a customer name (e.g. "ABC Corp")
-   - Pick mode "Cheque", deposit account (your bank), credit account
-     (e.g. a revenue account)
-   - Enter amount $500
-   - Live preview shows: DR 1001 $500 / CR <revenue> $500
-   - Submit → toast with JE ref
-4. Reports → Trial Balance → bank account up by $500, revenue up by $500
-5. Journal Entries → find the RCP-YYYY-NNNN entry
-
-## What's NOT in this bundle (intentional)
-
-- **Customer FK on receipts** — `receivedFrom` is a free-text field. A real
-  Customer model (with AR aging, statements, etc.) is a separate sizable
-  feature. v1 just records the name.
-- **Receipts against specific invoices** — receipts don't tie back to an
-  AR invoice (because no AR module yet). When AR is built, we'd add an
-  `arInvoiceId` field with allocation logic similar to AP payments.
-- **AP Payments using the new PaymentMode table** — AP Payments still use
-  their hard-coded enum. Migrating them to use PaymentMode would touch a
-  lot of code and risk regressions. Easy follow-up if/when needed.
-- **Default deposit/credit accounts per mode** — could pin "Credit Card" to
-  always deposit into Stripe Clearing, etc. Future enhancement.
-- **Bulk receipt entry** — single-receipt at a time only.
-- **Receipt attachments** — no file upload (the Attachment model exists
-  from the AP workflow bundle but isn't wired here yet).
+1. Open Bank Recon → click any reconciliation
+2. Click **Export ▾** → **PDF — Summary** → file downloads
+3. Open the PDF — confirm:
+   - Header with entity name, account, statement date, status
+   - Reconciliation math block with totals
+   - For an IN_PROGRESS recon: cleared lines (in the on-screen UI) will
+     export as `*` in the report
+   - For a COMPLETED recon: cleared lines export as `✓ YYYY-MM-DD`
+4. Try **Excel — Detailed** → file opens in Excel/LibreOffice with:
+   - Frozen header row on the transactions table
+   - Currency-formatted amount columns
+   - Color-coded tick column (green ✓ for completed, amber * for in-progress)
 
 ## Tests
 
-All 166 tests continue to pass. No new tests added — the receipt posting
-logic is DB-touching code (similar to AP payment posting), structurally
-identical to patterns already covered by deploy-and-test.
+173 total tests pass (166 prior + 7 new in `recon-report.test.ts`):
+
+- naturalBalance + sign convention
+- tick logic for the three states (uncleared / in-progress-cleared / completed-cleared)
+- outstanding-items math from uncleared list
+- book balance = clearedBalance + uncleared net
+- transactions sorted by date then ref
+- header pass-through
+
+Smoke-tested locally: all four format/detail combinations produce valid
+files (xlsx → ZIP signature `PK`; pdf → `%PDF-1.3` signature, parseable
+xref table, fonts embedded).
+
+## What's NOT in this bundle
+
+- **Email the report directly** — currently download-only. Easy follow-up
+  when email is wired up.
+- **Custom branding/logo** on the report header — currently text-only.
+  Future: per-entity logo upload + render.
+- **Multi-account reconciliation summary** — one rec at a time.
+- **Auto-export on finalize** — could trigger a PDF save when a recon is
+  finalized. Easy follow-up.
+- **Statement-line listing in the report** — the report shows BOOK
+  transactions only. If you uploaded a CSV statement, those lines are
+  for matching reference, not for the formal report. Could add as a
+  follow-up section.
