@@ -87,30 +87,75 @@ export default function LedgerProApp() {
       onAuth={(u, ents) => { setUser(u); setEntities(ents); setCurrentEntityState(ents[0] ?? null) }} />
   )
 
-  const navItems = [
-    { id: 'dashboard', label: 'Dashboard',         icon: '▤' },
-    { id: 'accounts',  label: 'Chart of Accounts', icon: '≡' },
-    { id: 'journals',  label: 'Journal Entries',   icon: '✎' },
-    { id: 'iif',       label: 'QB IIF',            icon: '⇄' },
-    { id: 'budget',    label: 'Budget & MIS',       icon: '◈' },
-    { id: 'ap',        label: 'AP Tracker',         icon: '◎' },
-    { id: 'ap-requests', label: 'Expense Requests', icon: '📥' },
-    { id: 'payments',  label: 'Payments',           icon: '✓' },
-    { id: 'recon',     label: 'Bank Recon',         icon: '↔' },
-    { id: 'vendor-recon', label: 'Vendor Recon',    icon: '◐' },
-    { id: 'assets',    label: 'Fixed Assets',       icon: '⬚' },
-    { id: 'reports',   label: 'Reports',            icon: '▤' },
-    { id: 'statement-templates', label: 'Custom Statements', icon: '📊' },
-    { id: 'audit',     label: 'Audit Trail',        icon: '⊙' },
-    { id: 'group',     label: 'Group Structure',    icon: '◇' },
-    { id: 'fx',        label: 'FX Rates',           icon: '⇄' },
-    { id: 'mis',       label: 'MIS / Departments',  icon: '⊞' },
-    { id: 'periods',   label: 'Period Locks',       icon: '🔒' },
-    { id: 'payroll',   label: 'Payroll',            icon: '◷' },
-    { id: 'w2',        label: 'W-2 / 1040-K',       icon: '◻' },
-    { id: 'users',     label: 'User Management',    icon: '◉' },
-    { id: 'settings',  label: 'Settings',            icon: '⚙' },
-  ].filter(n => canAccess(role, n.id) || user.isSuperAdmin)
+  // Menu structure: a flat list of items grouped into sections.
+  // The "_top" group has no header and renders as standalone items.
+  // Items are filtered by role-based access; groups with zero accessible
+  // items are hidden entirely.
+  const navStructure: Array<{ group: string; items: Array<{ id: string; label: string; icon: string }> }> = [
+    { group: '_top', items: [
+      { id: 'dashboard', label: 'Dashboard', icon: '▤' },
+    ]},
+    { group: 'Books', items: [
+      { id: 'accounts', label: 'Chart of Accounts', icon: '≡' },
+      { id: 'journals', label: 'Journal Entries',   icon: '✎' },
+      { id: 'periods',  label: 'Period Locks',      icon: '🔒' },
+    ]},
+    { group: 'Payables', items: [
+      { id: 'ap',           label: 'AP Tracker',       icon: '◎' },
+      { id: 'ap-requests',  label: 'Expense Requests', icon: '📥' },
+      { id: 'payments',     label: 'Payments',         icon: '✓' },
+    ]},
+    { group: 'Reconciliations', items: [
+      { id: 'recon',        label: 'Bank Recon',    icon: '↔' },
+      { id: 'vendor-recon', label: 'Vendor Recon',  icon: '◐' },
+    ]},
+    { group: 'Reports', items: [
+      { id: 'reports',              label: 'Reports',           icon: '▤' },
+      { id: 'statement-templates',  label: 'Custom Statements', icon: '📊' },
+    ]},
+    { group: 'Assets & Payroll', items: [
+      { id: 'assets',  label: 'Fixed Assets', icon: '⬚' },
+      { id: 'payroll', label: 'Payroll',      icon: '◷' },
+      { id: 'w2',      label: 'W-2 / 1040-K', icon: '◻' },
+    ]},
+    { group: 'Planning & MIS', items: [
+      { id: 'budget', label: 'Budget & MIS',      icon: '◈' },
+      { id: 'mis',    label: 'MIS / Departments', icon: '⊞' },
+    ]},
+    { group: 'Setup', items: [
+      { id: 'group', label: 'Group Structure', icon: '◇' },
+      { id: 'fx',    label: 'FX Rates',        icon: '⇄' },
+      { id: 'iif',   label: 'QB IIF',          icon: '⇄' },
+    ]},
+    { group: 'Admin', items: [
+      { id: 'audit',    label: 'Audit Trail',     icon: '⊙' },
+      { id: 'users',    label: 'User Management', icon: '◉' },
+      { id: 'settings', label: 'Settings',        icon: '⚙' },
+    ]},
+  ]
+
+  // Apply role-based filtering to each group and drop empty groups
+  const navGroups = navStructure
+    .map(g => ({ ...g, items: g.items.filter(n => canAccess(role, n.id) || user.isSuperAdmin) }))
+    .filter(g => g.items.length > 0)
+
+  // Auto-expand state: each group is expanded by default, but the user
+  // can collapse them. The group containing the current page is force-expanded.
+  const groupForPage = navGroups.find(g => g.items.some(i => i.id === page))?.group
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => {
+    try {
+      const raw = typeof window !== 'undefined' ? localStorage.getItem('ledgerpro:collapsedGroups') : null
+      return new Set<string>(raw ? JSON.parse(raw) : [])
+    } catch { return new Set<string>() }
+  })
+  const toggleGroup = (g: string) => {
+    setCollapsedGroups(prev => {
+      const next = new Set(prev)
+      if (next.has(g)) next.delete(g); else next.add(g)
+      try { localStorage.setItem('ledgerpro:collapsedGroups', JSON.stringify([...next])) } catch {}
+      return next
+    })
+  }
 
   return (
     <AppCtx.Provider value={{ user, entities, currentEntity, setCurrentEntity, role }}>
@@ -133,16 +178,51 @@ export default function LedgerProApp() {
           </div>
 
           <nav style={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}>
-            {navItems.map(n => (
-              <div key={n.id} style={{
-                ...S.navItem,
-                ...(page === n.id ? S.navActive : {}),
-                justifyContent: sidebarOpen ? 'flex-start' : 'center',
-              }} onClick={() => setPage(n.id)} title={!sidebarOpen ? n.label : ''}>
-                <span style={{ fontSize: 14, minWidth: 18, textAlign: 'center' }}>{n.icon}</span>
-                {sidebarOpen && <span style={{ fontSize: 13 }}>{n.label}</span>}
-              </div>
-            ))}
+            {navGroups.map(g => {
+              const isTop = g.group === '_top'
+              const isCollapsed = !isTop && collapsedGroups.has(g.group) && g.group !== groupForPage
+              return (
+                <div key={g.group} style={{ marginBottom: isTop ? 4 : 8 }}>
+                  {!isTop && sidebarOpen && (
+                    <div
+                      onClick={() => toggleGroup(g.group)}
+                      style={{
+                        padding: '6px 14px 4px',
+                        fontSize: 10,
+                        fontWeight: 700,
+                        letterSpacing: 0.08,
+                        textTransform: 'uppercase',
+                        color: '#94a3b8',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        userSelect: 'none',
+                      }}
+                    >
+                      <span>{g.group}</span>
+                      <span style={{ fontSize: 9, color: '#cbd5e1' }}>{isCollapsed ? '▸' : '▾'}</span>
+                    </div>
+                  )}
+                  {!isCollapsed && g.items.map(n => (
+                    <div
+                      key={n.id}
+                      style={{
+                        ...S.navItem,
+                        ...(page === n.id ? S.navActive : {}),
+                        justifyContent: sidebarOpen ? 'flex-start' : 'center',
+                        paddingLeft: sidebarOpen && !isTop ? 22 : undefined,
+                      }}
+                      onClick={() => setPage(n.id)}
+                      title={!sidebarOpen ? n.label : ''}
+                    >
+                      <span style={{ fontSize: 14, minWidth: 18, textAlign: 'center' }}>{n.icon}</span>
+                      {sidebarOpen && <span style={{ fontSize: 13 }}>{n.label}</span>}
+                    </div>
+                  ))}
+                </div>
+              )
+            })}
           </nav>
 
           <div style={S.sidebarBottom}>
@@ -194,7 +274,7 @@ export default function LedgerProApp() {
           <div style={S.topbar}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
               <span style={{ fontSize: 16, fontWeight: 600 }}>
-                {navItems.find(n => n.id === page)?.label ?? page}
+                {navGroups.flatMap(g => g.items).find(n => n.id === page)?.label ?? page}
               </span>
               {currentEntity && (
                 <span style={S.entityBadge}>{currentEntity.name}</span>
