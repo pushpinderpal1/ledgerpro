@@ -43,6 +43,7 @@ const MODULE_ACCESS: Record<string, string[]> = {
   audit:      ['OWNER','ADMIN','AUDITOR'],
   group:      ['OWNER','ADMIN'],
   fx:         ['OWNER','ADMIN','ACCOUNTANT'],
+  mis:        ['OWNER','ADMIN','ACCOUNTANT'],
   periods:    ['OWNER','ADMIN'],
   payroll:    ['OWNER','ADMIN','PAYROLL_CLERK'],
   w2:         ['OWNER','ADMIN','PAYROLL_CLERK'],
@@ -97,6 +98,7 @@ export default function LedgerProApp() {
     { id: 'audit',     label: 'Audit Trail',        icon: '⊙' },
     { id: 'group',     label: 'Group Structure',    icon: '◇' },
     { id: 'fx',        label: 'FX Rates',           icon: '⇄' },
+    { id: 'mis',       label: 'MIS / Departments',  icon: '⊞' },
     { id: 'periods',   label: 'Period Locks',       icon: '🔒' },
     { id: 'payroll',   label: 'Payroll',            icon: '◷' },
     { id: 'w2',        label: 'W-2 / 1040-K',       icon: '◻' },
@@ -216,6 +218,7 @@ export default function LedgerProApp() {
                 {page === 'audit'     && <AuditPage      showToast={showToast} />}
                 {page === 'group'     && <GroupPage      showToast={showToast} />}
                 {page === 'fx'        && <FxRatesPage    showToast={showToast} />}
+                {page === 'mis'       && <MisPage         showToast={showToast} />}
                 {page === 'periods'   && <PeriodsPage    showToast={showToast} />}
                 {page === 'payroll'   && <PayrollPage    showToast={showToast} />}
                 {page === 'w2'        && <W2Page         showToast={showToast} />}
@@ -630,9 +633,26 @@ function ImportCoaModal({ onClose, onImported, showToast }: {
     } finally { setBusy(false) }
   }
 
-  const downloadTemplate = () => {
-    window.open('/api/accounts/import?template=csv', '_blank')
-  }
+  // Template content as a CSV string — embedded directly in the anchor's
+  // data URI so the browser handles the download natively. No JS function
+  // call, no auth, no pop-up blocker, no Blob API.
+  const csvTemplate = [
+    'Code,Name,Type,SubType,Description,Parent Code',
+    '1000,Cash - Operating,ASSET,Bank,Primary checking account,',
+    '1010,Cash - Petty,ASSET,Bank,Petty cash on hand,',
+    '1100,Accounts Receivable,ASSET,Accounts Receivable,Customer balances,',
+    '1500,Fixed Assets,ASSET,Fixed Asset,Equipment and machinery,',
+    '1510,Accumulated Depreciation,ASSET,Fixed Asset,Contra-asset; credit-balance,1500',
+    '2000,Accounts Payable,LIABILITY,Accounts Payable,Vendor balances,',
+    "3000,Owner's Equity,EQUITY,,Equity capital,",
+    '4000,Sales Revenue,REVENUE,Income,Revenue from sales,',
+    '5000,Cost of Goods Sold,COGS,,Direct cost of products sold,',
+    '6000,Operating Expenses,EXPENSE,,General operating expenses,',
+    '6100,Rent Expense,EXPENSE,,Office rent,6000',
+    '6200,Depreciation Expense,EXPENSE,,Depreciation for the period,6000',
+    '',
+  ].join('\n')
+  const csvDataUri = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csvTemplate)
 
   return (
     <ModalOverlay onClose={onClose}>
@@ -644,7 +664,7 @@ function ImportCoaModal({ onClose, onImported, showToast }: {
           <div style={{ fontSize: 13, color: '#475569', lineHeight: 1.6, marginBottom: 14 }}>
             Two formats accepted:
             <ul style={{ marginTop: 6, marginBottom: 0, paddingLeft: 20 }}>
-              <li><strong>LedgerPro CSV template</strong> — columns: Code, Name, Type, SubType, Description, Parent Code. <button style={{ ...S.textBtn, padding: 0 }} onClick={downloadTemplate}>Download template</button></li>
+              <li><strong>LedgerPro CSV template</strong> — columns: Code, Name, Type, SubType, Description, Parent Code. <a href={csvDataUri} download="ledgerpro-coa-template.csv" style={{ color: '#2563eb', textDecoration: 'underline', cursor: 'pointer' }}>Download template</a></li>
               <li><strong>QuickBooks IIF</strong> — exported from QuickBooks Desktop ("File → Utilities → Export → Lists to IIF Files → Chart of Accounts"). QB account types (BANK, AR, AP, INC, etc.) are mapped automatically.</li>
             </ul>
           </div>
@@ -793,8 +813,13 @@ function JournalsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') =>
   const { currentEntity, role } = useApp()
   const [entries, setEntries] = useState<JournalEntry[]>([])
   const [accounts, setAccounts] = useState<Account[]>([])
+  const [misConfig, setMisConfig] = useState<MisConfig | null>(null)
+  const [misCodes, setMisCodes] = useState<MisCodeRow[]>([])
   const [showForm, setShowForm] = useState(false)
-  const [lines, setLines] = useState([{ accountId: '', debit: '', credit: '', description: '' }, { accountId: '', debit: '', credit: '', description: '' }])
+  const [lines, setLines] = useState([
+    { accountId: '', debit: '', credit: '', description: '', misCodeId: '' },
+    { accountId: '', debit: '', credit: '', description: '', misCodeId: '' },
+  ])
   const [hdr, setHdr] = useState({ date: new Date().toISOString().split('T')[0], description: '', memo: '' })
   const canWrite = ['OWNER','ADMIN','ACCOUNTANT'].includes(role)
 
@@ -802,6 +827,8 @@ function JournalsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') =>
     if (!currentEntity) return
     fetch(`/api/journals?entityId=${currentEntity.id}&limit=20`).then(r => r.json()).then(d => setEntries(d.entries ?? []))
     fetch(`/api/accounts?entityId=${currentEntity.id}`).then(r => r.json()).then(setAccounts)
+    fetch(`/api/mis-config?entityId=${currentEntity.id}`).then(r => r.json()).then(setMisConfig)
+    fetch(`/api/mis-codes?entityId=${currentEntity.id}`).then(r => r.json()).then(d => setMisCodes(d.codes ?? []))
   }, [currentEntity])
 
   useEffect(() => { load() }, [load])
@@ -810,8 +837,30 @@ function JournalsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') =>
   const totalCredit = lines.reduce((s,l) => s + (parseFloat(l.credit) || 0), 0)
   const balanced = Math.abs(totalDebit - totalCredit) < 0.005
 
+  // MIS validation preview — mirrors src/lib/mis/policy.ts validateLines.
+  const misIssues = (() => {
+    if (!misConfig?.enabled) return [] as { lineIdx: number; type: 'error'|'warning'; msg: string }[]
+    const required = new Set(misConfig.requiredForTypes)
+    if (required.size === 0) return []
+    const out: { lineIdx: number; type: 'error'|'warning'; msg: string }[] = []
+    lines.forEach((l, i) => {
+      if (!l.accountId) return
+      const acct = accounts.find(a => a.id === l.accountId)
+      if (!acct || !required.has(acct.type as AccountTypeT)) return
+      if (l.misCodeId && l.misCodeId.trim()) return
+      out.push({
+        lineIdx: i,
+        type: misConfig.allowOverride ? 'warning' : 'error',
+        msg: `Line ${i + 1} (${acct.type}) ${misConfig.allowOverride ? 'recommended' : 'requires'} an MIS code`,
+      })
+    })
+    return out
+  })()
+  const misBlocks = misIssues.some(x => x.type === 'error')
+
   const save = async (status: 'DRAFT'|'POST') => {
     if (!currentEntity) return
+    if (status === 'POST' && misBlocks) return showToast('MIS code required on flagged lines', 'err')
     const res = await fetch('/api/journals', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -819,22 +868,31 @@ function JournalsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') =>
         lines: lines.filter(l => l.accountId).map((l,i) => ({
           accountId: l.accountId, description: l.description,
           debit: parseFloat(l.debit)||0, credit: parseFloat(l.credit)||0, lineOrder: i,
+          misCodeId: l.misCodeId || undefined,
         })),
       }),
     })
     if (res.ok) {
       showToast('Journal entry saved')
       setShowForm(false)
-      setLines([{ accountId:'',debit:'',credit:'',description:'' },{ accountId:'',debit:'',credit:'',description:'' }])
+      setLines([
+        { accountId:'',debit:'',credit:'',description:'',misCodeId:'' },
+        { accountId:'',debit:'',credit:'',description:'',misCodeId:'' },
+      ])
       setHdr({ date: new Date().toISOString().split('T')[0], description:'', memo:'' })
       load()
     } else { const d = await res.json(); showToast(d.error ?? 'Error', 'err') }
   }
 
+  const showMisCol = misConfig?.enabled === true
+  const activeCodes = misCodes.filter(c => c.isActive)
+
   return (
     <div>
       <div style={S.pageActions}>
-        <span style={{ fontSize: 13, color: '#64748b' }}>{entries.length} entries shown</span>
+        <span style={{ fontSize: 13, color: '#64748b' }}>{entries.length} entries shown
+          {showMisCol && <span style={{ marginLeft: 12, padding: '2px 8px', background: '#eff6ff', color: '#1d4ed8', borderRadius: 4, fontSize: 11, fontWeight: 600 }}>MIS active{misConfig?.allowOverride ? ' · lenient' : ' · strict'}</span>}
+        </span>
         {canWrite && <button style={{ ...S.btn, ...S.btnPrimary }} onClick={() => setShowForm(o => !o)}>+ New entry</button>}
       </div>
 
@@ -846,10 +904,12 @@ function JournalsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') =>
             <div><label style={S.label}>Description</label><input style={S.input} value={hdr.description} onChange={e => setHdr(h => ({...h,description:e.target.value}))} placeholder="e.g. Monthly payroll" /></div>
           </div>
           <div style={{ overflowX: 'auto', marginBottom: 12 }}>
-            <table style={{ ...S.table, minWidth: 600 }}>
-              <thead><tr>{['Account','Description','Debit','Credit',''].map(h => <th key={h} style={S.th}>{h}</th>)}</tr></thead>
+            <table style={{ ...S.table, minWidth: showMisCol ? 720 : 600 }}>
+              <thead><tr>{(showMisCol ? ['Account','Description','Debit','Credit','MIS code',''] : ['Account','Description','Debit','Credit','']).map(h => <th key={h} style={S.th}>{h}</th>)}</tr></thead>
               <tbody>
-                {lines.map((l, i) => (
+                {lines.map((l, i) => {
+                  const issue = misIssues.find(x => x.lineIdx === i)
+                  return (
                   <tr key={i}>
                     <td style={S.td}>
                       <select style={{ ...S.select, width: 180 }} value={l.accountId} onChange={e => setLines(ls => ls.map((x,j) => j===i?{...x,accountId:e.target.value}:x))}>
@@ -860,23 +920,47 @@ function JournalsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') =>
                     <td style={S.td}><input style={{ ...S.input, marginBottom: 0, width: 120 }} value={l.description} placeholder="Memo" onChange={e => setLines(ls => ls.map((x,j) => j===i?{...x,description:e.target.value}:x))} /></td>
                     <td style={S.td}><input style={{ ...S.input, marginBottom: 0, width: 90, color: '#dc2626' }} value={l.debit} placeholder="0.00" onChange={e => setLines(ls => ls.map((x,j) => j===i?{...x,debit:e.target.value}:x))} /></td>
                     <td style={S.td}><input style={{ ...S.input, marginBottom: 0, width: 90, color: '#16a34a' }} value={l.credit} placeholder="0.00" onChange={e => setLines(ls => ls.map((x,j) => j===i?{...x,credit:e.target.value}:x))} /></td>
+                    {showMisCol && (
+                      <td style={S.td}>
+                        <select
+                          style={{
+                            ...S.select, width: 160,
+                            ...(issue ? { borderColor: issue.type === 'error' ? '#dc2626' : '#d97706' } : {}),
+                          }}
+                          value={l.misCodeId}
+                          onChange={e => setLines(ls => ls.map((x,j) => j===i?{...x,misCodeId:e.target.value}:x))}
+                        >
+                          <option value="">— (none)</option>
+                          {activeCodes.map(c => <option key={c.id} value={c.id}>{c.code} — {c.department}</option>)}
+                        </select>
+                      </td>
+                    )}
                     <td style={S.td}><button style={{ ...S.btn, padding: '3px 8px', fontSize: 11 }} onClick={() => setLines(ls => ls.filter((_,j) => j!==i))}>✕</button></td>
                   </tr>
-                ))}
+                )})}
                 <tr>
                   <td style={{ ...S.td, fontWeight: 600 }}>Totals</td>
                   <td style={S.td}></td>
                   <td style={{ ...S.td, fontWeight: 700, color: '#dc2626' }}>${fmt(totalDebit)}</td>
                   <td style={{ ...S.td, fontWeight: 700, color: '#16a34a' }}>${fmt(totalCredit)}</td>
+                  {showMisCol && <td style={S.td}></td>}
                   <td style={S.td}></td>
                 </tr>
               </tbody>
             </table>
           </div>
           {!balanced && <div style={S.errMsg}>Entry is unbalanced — debits ${fmt(totalDebit)} ≠ credits ${fmt(totalCredit)}</div>}
+          {misIssues.length > 0 && (
+            <div style={{ padding: 10, marginBottom: 12, borderRadius: 6, background: misBlocks ? '#fef2f2' : '#fffbeb', border: `1px solid ${misBlocks ? '#fecaca' : '#fde68a'}`, fontSize: 12, color: misBlocks ? '#991b1b' : '#92400e' }}>
+              {misBlocks ? '⚠ MIS required:' : 'ℹ MIS recommended:'}
+              <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+                {misIssues.map((x, k) => <li key={k}>{x.msg}</li>)}
+              </ul>
+            </div>
+          )}
           <div style={{ display:'flex', gap:8 }}>
-            <button style={S.btn} onClick={() => setLines(ls => [...ls, { accountId:'',debit:'',credit:'',description:'' }])}>+ Add line</button>
-            <button style={{ ...S.btn, ...S.btnPrimary }} onClick={() => save('POST')} disabled={!balanced || lines.filter(l=>l.accountId).length < 2}>Post entry</button>
+            <button style={S.btn} onClick={() => setLines(ls => [...ls, { accountId:'',debit:'',credit:'',description:'',misCodeId:'' }])}>+ Add line</button>
+            <button style={{ ...S.btn, ...S.btnPrimary }} onClick={() => save('POST')} disabled={!balanced || lines.filter(l=>l.accountId).length < 2 || misBlocks}>Post entry</button>
             <button style={S.btn} onClick={() => save('DRAFT')}>Save draft</button>
             <button style={S.btn} onClick={() => setShowForm(false)}>Cancel</button>
           </div>
@@ -4555,6 +4639,277 @@ function FetchLatestModal({ onClose, onFetched, showToast }: {
         </>
       )}
     </ModalOverlay>
+  )
+}
+
+// ─── MIS / Departments ────────────────────────────────────────────────────────
+const ACCOUNT_TYPES_FOR_MIS = ['ASSET', 'LIABILITY', 'EQUITY', 'REVENUE', 'EXPENSE', 'COGS'] as const
+type AccountTypeT = typeof ACCOUNT_TYPES_FOR_MIS[number]
+
+interface MisCodeRow {
+  id: string
+  code: string
+  department: string
+  description: string | null
+  isActive: boolean
+  displayOrder: number
+  _count?: { journalLines: number }
+}
+interface MisConfig {
+  enabled: boolean
+  requiredForTypes: AccountTypeT[]
+  allowOverride: boolean
+}
+
+function MisPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => void }) {
+  const { currentEntity, role } = useApp()
+  const [tab, setTab] = useState<'codes'|'config'>('codes')
+  const canWrite = ['OWNER','ADMIN','ACCOUNTANT'].includes(role)
+  const canConfig = ['OWNER','ADMIN'].includes(role)
+
+  return (
+    <div>
+      <div style={S.pageActions}>
+        <div style={{ display: 'flex', gap: 4 }}>
+          <button onClick={() => setTab('codes')} style={{ ...S.btn, ...(tab==='codes' ? { background:'#0f172a', color:'#fff', borderColor:'#0f172a' } : {}) }}>Codes</button>
+          <button onClick={() => setTab('config')} style={{ ...S.btn, ...(tab==='config' ? { background:'#0f172a', color:'#fff', borderColor:'#0f172a' } : {}) }}>Configuration</button>
+        </div>
+      </div>
+      {tab === 'codes'  && <MisCodes  showToast={showToast} canWrite={canWrite} />}
+      {tab === 'config' && <MisConfigPanel showToast={showToast} canEdit={canConfig} />}
+    </div>
+  )
+}
+
+// ─── Codes master list ───────────────────────────────────────────────────────
+function MisCodes({ showToast, canWrite }: { showToast: (m: string, t?: 'ok'|'err') => void; canWrite: boolean }) {
+  const { currentEntity } = useApp()
+  const [codes, setCodes] = useState<MisCodeRow[]>([])
+  const [softCap, setSoftCap] = useState(10)
+  const [includeInactive, setIncludeInactive] = useState(false)
+  const [showForm, setShowForm] = useState(false)
+  const [form, setForm] = useState({ code: '', department: '', description: '' })
+
+  const load = useCallback(() => {
+    if (!currentEntity) return
+    const sp = new URLSearchParams({ entityId: currentEntity.id })
+    if (includeInactive) sp.set('includeInactive', '1')
+    fetch(`/api/mis-codes?${sp}`).then(r => r.json()).then(d => {
+      setCodes(d.codes ?? [])
+      if (d.softCap) setSoftCap(d.softCap)
+    })
+  }, [currentEntity, includeInactive])
+  useEffect(() => { load() }, [load])
+
+  const activeCount = codes.filter(c => c.isActive).length
+
+  const save = async () => {
+    if (!currentEntity) return
+    if (!form.code || !form.department) return showToast('Code and Department are required', 'err')
+    const res = await fetch('/api/mis-codes', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ entityId: currentEntity.id, ...form, code: form.code.toUpperCase() }),
+    })
+    const data = await res.json()
+    if (res.ok) {
+      showToast('MIS code added' + (data.softCapWarning ? ` — note: you have more than ${softCap} active codes` : ''))
+      setShowForm(false)
+      setForm({ code: '', department: '', description: '' })
+      load()
+    } else {
+      showToast(data.error ?? 'Error', 'err')
+    }
+  }
+
+  const toggleActive = async (row: MisCodeRow) => {
+    if (!currentEntity) return
+    const res = await fetch('/api/mis-codes', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ entityId: currentEntity.id, id: row.id, isActive: !row.isActive }),
+    })
+    if (res.ok) { showToast(row.isActive ? 'Deactivated' : 'Reactivated'); load() }
+    else { const d = await res.json(); showToast(d.error ?? 'Error', 'err') }
+  }
+
+  const del = async (row: MisCodeRow) => {
+    if (!currentEntity) return
+    const used = row._count?.journalLines ?? 0
+    if (used > 0) {
+      if (!confirm(`This code is used in ${used} journal line(s). Deleting will deactivate it (historical lines keep the tag). Continue?`)) return
+    } else {
+      if (!confirm(`Delete "${row.code} — ${row.department}"? This is permanent (code is unused).`)) return
+    }
+    const res = await fetch(`/api/mis-codes?entityId=${currentEntity.id}&id=${row.id}`, { method: 'DELETE' })
+    if (res.ok) { showToast('Done'); load() }
+    else { const d = await res.json(); showToast(d.error ?? 'Error', 'err') }
+  }
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+        <div style={{ fontSize: 13, color: '#475569', lineHeight: 1.5 }}>
+          {activeCount} active code{activeCount === 1 ? '' : 's'}
+          {activeCount > softCap && <span style={{ color: '#d97706', marginLeft: 8 }}>⚠ exceeds soft cap of {softCap}</span>}
+        </div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <label style={{ fontSize: 12, color: '#64748b', display: 'flex', gap: 6, alignItems: 'center' }}>
+            <input type="checkbox" checked={includeInactive} onChange={e => setIncludeInactive(e.target.checked)} />
+            Show inactive
+          </label>
+          {canWrite && <button style={{ ...S.btn, ...S.btnPrimary }} onClick={() => setShowForm(o => !o)}>+ New code</button>}
+        </div>
+      </div>
+
+      {showForm && (
+        <div style={{ ...S.card, marginBottom: 16 }}>
+          <div style={S.cardHeader}>New MIS / Department code</div>
+          <div style={S.formGrid}>
+            <div><label style={S.label}>Code</label><input style={S.input} value={form.code} onChange={e => setForm(f => ({ ...f, code: e.target.value.toUpperCase() }))} placeholder="DEPT01" /></div>
+            <div><label style={S.label}>Department</label><input style={S.input} value={form.department} onChange={e => setForm(f => ({ ...f, department: e.target.value }))} placeholder="Sales — North" /></div>
+            <div style={{ gridColumn: '1 / -1' }}><label style={S.label}>Description (optional)</label><input style={S.input} value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} /></div>
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+            <button style={{ ...S.btn, ...S.btnPrimary }} onClick={save}>Save</button>
+            <button style={S.btn} onClick={() => setShowForm(false)}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      <div style={S.card}>
+        <table style={S.table}>
+          <thead><tr>{['Code','Department','Description','# of postings','Status',''].map(h => <th key={h} style={S.th}>{h}</th>)}</tr></thead>
+          <tbody>
+            {codes.length === 0 && <tr><td colSpan={6} style={{ ...S.td, textAlign: 'center', color: '#94a3b8' }}>No MIS codes yet — add up to {softCap} departments to start tagging journal lines</td></tr>}
+            {codes.map(c => (
+              <tr key={c.id} style={{ opacity: c.isActive ? 1 : 0.5 }}>
+                <td style={{ ...S.td, fontFamily: 'monospace', fontWeight: 600, fontSize: 12 }}>{c.code}</td>
+                <td style={{ ...S.td, fontWeight: 500 }}>{c.department}</td>
+                <td style={{ ...S.td, fontSize: 12, color: '#64748b' }}>{c.description ?? '—'}</td>
+                <td style={{ ...S.td, textAlign: 'right', fontSize: 12, color: '#64748b' }}>{c._count?.journalLines ?? 0}</td>
+                <td style={S.td}>
+                  <span style={{ background: c.isActive ? '#f0fdf4' : '#f1f5f9', color: c.isActive ? '#166534' : '#475569', padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600 }}>
+                    {c.isActive ? 'Active' : 'Inactive'}
+                  </span>
+                </td>
+                <td style={{ ...S.td, textAlign: 'right' }}>
+                  {canWrite && <>
+                    <button style={S.textBtn} onClick={() => toggleActive(c)}>{c.isActive ? 'Deactivate' : 'Reactivate'}</button>
+                    <span style={{ color: '#cbd5e1', margin: '0 8px' }}>·</span>
+                    <button style={{ ...S.textBtn, color: '#dc2626' }} onClick={() => del(c)}>Delete</button>
+                  </>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+// ─── Configuration panel ─────────────────────────────────────────────────────
+function MisConfigPanel({ showToast, canEdit }: { showToast: (m: string, t?: 'ok'|'err') => void; canEdit: boolean }) {
+  const { currentEntity } = useApp()
+  const [config, setConfig] = useState<MisConfig | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  const load = useCallback(() => {
+    if (!currentEntity) return
+    fetch(`/api/mis-config?entityId=${currentEntity.id}`).then(r => r.json()).then(setConfig)
+  }, [currentEntity])
+  useEffect(() => { load() }, [load])
+
+  const save = async (next: Partial<MisConfig>) => {
+    if (!currentEntity || !config) return
+    setBusy(true)
+    try {
+      const res = await fetch('/api/mis-config', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ entityId: currentEntity.id, enabled: config.enabled, requiredForTypes: config.requiredForTypes, allowOverride: config.allowOverride, ...next }),
+      })
+      if (res.ok) { setConfig(await res.json()); showToast('Saved') }
+      else { const d = await res.json(); showToast(d.error ?? 'Error', 'err') }
+    } finally { setBusy(false) }
+  }
+
+  const toggleType = (t: AccountTypeT) => {
+    if (!config) return
+    const set = new Set(config.requiredForTypes)
+    if (set.has(t)) set.delete(t)
+    else set.add(t)
+    save({ requiredForTypes: [...set] })
+  }
+
+  if (!config) return <div style={{ padding: 30, textAlign: 'center', color: '#94a3b8' }}>Loading…</div>
+
+  return (
+    <div>
+      <div style={{ ...S.card, marginBottom: 16 }}>
+        <div style={S.cardHeader}>Master toggle</div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 0' }}>
+          <div>
+            <div style={{ fontWeight: 500, fontSize: 14 }}>Enable MIS coding on this entity</div>
+            <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>When off, the MIS dropdown is hidden from posting screens entirely. When on, the rules below apply.</div>
+          </div>
+          {canEdit && (
+            <button
+              style={{ ...S.btn, ...(config.enabled ? { background: '#0f172a', color: '#fff', borderColor: '#0f172a' } : {}) }}
+              disabled={busy}
+              onClick={() => save({ enabled: !config.enabled })}
+            >
+              {config.enabled ? 'Enabled' : 'Disabled'}
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div style={{ ...S.card, marginBottom: 16, opacity: config.enabled ? 1 : 0.5, pointerEvents: config.enabled && canEdit ? 'auto' : 'none' }}>
+        <div style={S.cardHeader}>Require MIS code on these account types</div>
+        <div style={{ fontSize: 12, color: '#64748b', marginBottom: 12, lineHeight: 1.5 }}>
+          When the lines being posted touch any of these account types, the user must pick an MIS code on each such line. Lines for other types remain optional.
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+          {ACCOUNT_TYPES_FOR_MIS.map(t => {
+            const on = config.requiredForTypes.includes(t)
+            return (
+              <button
+                key={t}
+                onClick={() => toggleType(t)}
+                style={{
+                  padding: '6px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600,
+                  border: '1px solid ' + (on ? '#0f172a' : '#cbd5e1'),
+                  background: on ? '#0f172a' : '#fff',
+                  color: on ? '#fff' : '#475569',
+                  cursor: canEdit ? 'pointer' : 'default',
+                }}
+              >
+                {on ? '✓ ' : ''}{t}
+              </button>
+            )
+          })}
+        </div>
+      </div>
+
+      <div style={{ ...S.card, opacity: config.enabled ? 1 : 0.5, pointerEvents: config.enabled && canEdit ? 'auto' : 'none' }}>
+        <div style={S.cardHeader}>Override behavior</div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 0' }}>
+          <div>
+            <div style={{ fontWeight: 500, fontSize: 14 }}>Allow override (downgrade required → optional)</div>
+            <div style={{ fontSize: 12, color: '#64748b', marginTop: 2, lineHeight: 1.5 }}>
+              When ON: posting screens show a warning if a "required" line is missing an MIS code, but won't block submission.<br />
+              When OFF (strict): missing MIS codes on required lines block posting entirely.
+            </div>
+          </div>
+          <button
+            style={{ ...S.btn, ...(config.allowOverride ? { background: '#d97706', color: '#fff', borderColor: '#d97706' } : {}) }}
+            disabled={busy || !canEdit}
+            onClick={() => save({ allowOverride: !config.allowOverride })}
+          >
+            {config.allowOverride ? 'Override ON (lenient)' : 'Override OFF (strict)'}
+          </button>
+        </div>
+      </div>
+    </div>
   )
 }
 

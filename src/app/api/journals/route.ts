@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { z } from 'zod'
 import { db } from '@/lib/db'
 import { requireEntityAccess } from '@/lib/auth'
+import { validatePostingLines } from '@/lib/mis'
 
 const lineSchema = z.object({
   accountId: z.string(),
@@ -9,6 +10,7 @@ const lineSchema = z.object({
   debit: z.number().min(0).default(0),
   credit: z.number().min(0).default(0),
   lineOrder: z.number().default(0),
+  misCodeId: z.string().optional(),
 })
 
 const entrySchema = z.object({
@@ -83,6 +85,18 @@ export async function POST(req: NextRequest) {
       }, { status: 400 })
     }
 
+    // MIS validation — blocks posting if the entity's strict policy is on and
+    // any line that needs an MIS code is missing one. Warnings (lenient mode)
+    // don't block here; the UI surfaces them.
+    const misIssues = await validatePostingLines(entityId, data.lines)
+    const misErrors = misIssues.filter(i => i.severity === 'error')
+    if (misErrors.length > 0) {
+      return NextResponse.json({
+        error: 'MIS code required',
+        details: misErrors.map(e => e.message),
+      }, { status: 400 })
+    }
+
     // Generate reference number
     const count = await db.journalEntry.count({ where: { entityId } })
     const ref = `JE-${new Date().getFullYear()}-${String(count + 1).padStart(4, '0')}`
@@ -104,6 +118,7 @@ export async function POST(req: NextRequest) {
             debit: l.debit,
             credit: l.credit,
             lineOrder: l.lineOrder || i,
+            misCodeId: l.misCodeId || null,
           })),
         },
       },

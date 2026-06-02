@@ -11,6 +11,8 @@ import {
   cashFlows,
   journalReport,
   expensesByVendor,
+  profitAndLossByDepartment,
+  trialBalanceByDepartment,
 } from '@/lib/reports'
 
 /**
@@ -89,6 +91,12 @@ export async function GET(req: NextRequest) {
 
       case 'expenses-by-vendor':
         return NextResponse.json(await expensesByVendor(entityId, { from, to }))
+
+      case 'pnl-by-department':
+        return NextResponse.json(await profitAndLossByDepartment(entityId, { from, to }))
+
+      case 'trial-balance-by-department':
+        return NextResponse.json(await trialBalanceByDepartment(entityId, { from, to }))
 
       default:
         return NextResponse.json({ error: `Unknown report type: ${type}` }, { status: 400 })

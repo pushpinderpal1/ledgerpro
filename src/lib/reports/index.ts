@@ -583,3 +583,146 @@ export async function profitAndLossComparison(entityId: string, range: DateRange
     priorYearRange: { from: yearFrom, to: yearTo },
   }
 }
+
+// ─── MIS / Department reports ─────────────────────────────────────────────────
+//
+// These reports produce a cross-tab where columns are MIS codes (departments)
+// and rows are accounts. Lines without an MIS code are summed into a special
+// "(Unallocated)" column so totals always tie back to the standard reports.
+//
+// Both reports respect the standard date range / POSTED-only / entity filters.
+
+interface MisColumn {
+  id: string                   // MIS code id, or "_unallocated"
+  code: string                 // human-readable column header
+  department: string
+}
+
+interface MisAccountRow {
+  accountId: string
+  code: string
+  name: string
+  type: string
+  byColumn: Record<string, number>     // { [columnId]: netAmount }
+  total: number
+}
+
+interface MisCubeResult {
+  columns: MisColumn[]
+  rows: MisAccountRow[]
+  totals: Record<string, number>
+}
+
+/**
+ * Internal: builds an account × MIS-code cube for the given account-type set
+ * and date range. Used by profitAndLossByDepartment and trialBalanceByDepartment.
+ */
+async function buildMisCube(
+  entityId: string,
+  range: DateRange,
+  accountTypes: string[],
+  natural: 'CREDIT' | 'DEBIT',          // determines sign convention for "amount" column
+): Promise<MisCubeResult> {
+  // Active MIS codes form the columns; we also always add an "Unallocated" column.
+  const codes = await db.misCode.findMany({
+    where: { entityId, isActive: true },
+    orderBy: [{ displayOrder: 'asc' }, { code: 'asc' }],
+    select: { id: true, code: true, department: true },
+  })
+  const columns: MisColumn[] = [
+    ...codes.map(c => ({ id: c.id, code: c.code, department: c.department })),
+    { id: '_unallocated', code: '(Unallocated)', department: 'No MIS code' },
+  ]
+
+  const where: Parameters<typeof db.journalLine.findMany>[0] = {
+    where: {
+      entry: {
+        entityId,
+        status: 'POSTED',
+        ...(range.from || range.to ? {
+          date: {
+            ...(range.from ? { gte: range.from } : {}),
+            ...(range.to   ? { lte: range.to   } : {}),
+          },
+        } : {}),
+      },
+      account: { type: { in: accountTypes as never[] } },
+    },
+    include: {
+      account: { select: { id: true, code: true, name: true, type: true } },
+    },
+  } as Parameters<typeof db.journalLine.findMany>[0]
+  const lines = await db.journalLine.findMany(where)
+
+  // Aggregate by (accountId, columnKey)
+  const rowsMap = new Map<string, MisAccountRow>()
+  const totals: Record<string, number> = Object.fromEntries(columns.map(c => [c.id, 0]))
+
+  for (const line of lines as Array<{
+    accountId: string; debit: unknown; credit: unknown; misCodeId: string | null;
+    account: { id: string; code: string; name: string; type: string }
+  }>) {
+    const sign = natural === 'CREDIT' ? -1 : 1
+    const net = sign * (Number(line.debit) - Number(line.credit))
+    const colId = line.misCodeId && columns.find(c => c.id === line.misCodeId) ? line.misCodeId : '_unallocated'
+    const accountId = line.account.id
+
+    let row = rowsMap.get(accountId)
+    if (!row) {
+      row = {
+        accountId,
+        code: line.account.code,
+        name: line.account.name,
+        type: line.account.type,
+        byColumn: Object.fromEntries(columns.map(c => [c.id, 0])),
+        total: 0,
+      }
+      rowsMap.set(accountId, row)
+    }
+    row.byColumn[colId] += net
+    row.total += net
+    totals[colId] += net
+  }
+
+  // Sort rows by account code for consistent reading order.
+  const rows = [...rowsMap.values()].sort((a, b) => a.code.localeCompare(b.code))
+  return { columns, rows, totals }
+}
+
+/**
+ * P&L by Department — revenue and expense accounts as rows, MIS codes as columns.
+ * Revenue rows use natural credit-balance convention (so positives are revenue),
+ * expense/COGS rows use natural debit-balance.
+ */
+export async function profitAndLossByDepartment(entityId: string, range: DateRange = {}) {
+  const revenue = await buildMisCube(entityId, range, ['REVENUE'], 'CREDIT')
+  const expense = await buildMisCube(entityId, range, ['EXPENSE', 'COGS'], 'DEBIT')
+
+  // Net income = revenue total − expense total, per column.
+  const columns = revenue.columns  // same column set for both
+  const netByCol: Record<string, number> = {}
+  for (const c of columns) {
+    netByCol[c.id] = (revenue.totals[c.id] ?? 0) - (expense.totals[c.id] ?? 0)
+  }
+  return {
+    columns,
+    revenue,
+    expense,
+    netIncome: netByCol,
+    range,
+  }
+}
+
+/**
+ * Trial Balance by Department — every account as a row, MIS codes as columns.
+ * Uses raw debit-credit signed net (positive = debit, negative = credit) for
+ * easy verification that columns balance.
+ */
+export async function trialBalanceByDepartment(entityId: string, range: DateRange = {}) {
+  const cube = await buildMisCube(
+    entityId, range,
+    ['ASSET', 'LIABILITY', 'EQUITY', 'REVENUE', 'EXPENSE', 'COGS'],
+    'DEBIT',
+  )
+  return { ...cube, range }
+}

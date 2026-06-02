@@ -34,6 +34,11 @@ model LegalEntity {
   parent           LegalEntity?  @relation("EntityHierarchy", fields: [parentEntityId], references: [id], onDelete: SetNull)
   children         LegalEntity[] @relation("EntityHierarchy")
 
+  // ── MIS / multi-dimensional accounting (opt-in per entity) ──
+  misEnabled              Boolean @default(false)             // master toggle
+  misRequiredForTypes     String  @default("")                // CSV of AccountType values, e.g. "EXPENSE,REVENUE,COGS"
+  misAllowOverride        Boolean @default(false)             // when true, requiredForTypes is downgraded to optional
+
   userAccess     EntityAccess[]
   accounts       Account[]
   journalEntries JournalEntry[]
@@ -51,6 +56,7 @@ model LegalEntity {
   assetCategories AssetCategory[]
   fixedAssets     FixedAsset[]
   depreciationEntries DepreciationEntry[]
+  misCodes       MisCode[]
 
   @@map("legal_entities")
 }
@@ -260,11 +266,16 @@ model JournalLine {
   clearedDate    DateTime?
   reconciledId   String?
 
+  // ── MIS / department tagging (optional, only used when entity.misEnabled) ──
+  misCodeId      String?
+
   entry        JournalEntry        @relation(fields: [entryId], references: [id], onDelete: Cascade)
   account      Account             @relation(fields: [accountId], references: [id], onDelete: Restrict)
   reconciled   BankReconciliation? @relation(fields: [reconciledId], references: [id], onDelete: SetNull)
+  misCode      MisCode?            @relation(fields: [misCodeId], references: [id], onDelete: SetNull)
 
   @@index([accountId, clearedStatus])
+  @@index([misCodeId])
   @@map("journal_lines")
 }
 
@@ -733,6 +744,33 @@ model DepreciationEntry {
   @@unique([fixedAssetId, periodEnd])          // idempotency: one entry per asset per period
   @@index([entityId, periodEnd])
   @@map("depreciation_entries")
+}
+
+// ─── MIS CODES (DEPARTMENTS / DIMENSIONS) ────────────────────────────────────
+// Opt-in per entity. Users define their MIS codes (typically up to 10) and
+// posted journal lines can be tagged with one. Reports can then break down
+// by department.
+//
+// Soft-delete via isActive — codes that have been used in postings should
+// not be hard-deleted, so reports continue to render historical data.
+
+model MisCode {
+  id           String   @id @default(cuid())
+  entityId     String
+  code         String                                 // user-visible identifier, e.g. "DEPT01"
+  department   String                                 // human-friendly label, e.g. "Sales — North"
+  description  String?
+  isActive     Boolean  @default(true)
+  displayOrder Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  entity       LegalEntity   @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  journalLines JournalLine[]
+
+  @@unique([entityId, code])
+  @@index([entityId, isActive])
+  @@map("mis_codes")
 }
 
 // ─── AUDIT LOG ───────────────────────────────────────────────────────────────

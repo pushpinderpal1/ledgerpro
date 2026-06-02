@@ -1,117 +1,170 @@
-# LedgerPro — Chart of Accounts Import
+# LedgerPro — MIS / Multi-Dimensional Accounting
 
-Adds an Import button to the Accounts page supporting two formats:
-- **LedgerPro CSV template** (downloadable from the modal)
-- **QuickBooks IIF** files exported from QuickBooks Desktop
+Adds opt-in MIS (department) coding per entity, with configurable
+strictness, a master list of MIS codes, and two new department-level reports.
 
-Three-stage flow: pick file → preview with conflict detection → commit.
-Manual rates and existing accounts are never destructively overwritten by
-default; the user must opt in to conflict overwrites.
+Entities that don't enable MIS see no UI changes — the system behaves
+exactly as before.
 
 ## What's in this zip
 
-- `src/lib/accounts/import-parse.ts` — pure parsers for CSV and IIF,
-  with the QuickBooks → LedgerPro account-type mapping table.
-- `src/lib/accounts/import.ts` — DB-backed engine with classify/commit
-  phases and two-pass parent linkage.
-- `src/app/api/accounts/import/route.ts` — POST endpoint (preview /
-  commit) + GET template downloader.
-- `src/app/page.tsx` — replaces existing. Adds "↥ Import COA" button to
-  Accounts page and the full import modal.
-- `tests/account-import.test.ts` — 14 new tests, 123 total passing.
+- `prisma/schema.prisma` — adds 3 columns to LegalEntity (`misEnabled`,
+  `misRequiredForTypes`, `misAllowOverride`), adds `MisCode` model,
+  adds `misCodeId` FK on JournalLine.
+- `prisma/migrations/0007_mis_dimensions/migration.sql` — additive,
+  fully safe to deploy on existing data.
+- `src/lib/mis/policy.ts` — pure policy logic (no DB), shared between
+  server and client.
+- `src/lib/mis/index.ts` — DB-backed helpers used during posting.
+- `src/lib/reports/index.ts` — replaces existing. Adds
+  `profitAndLossByDepartment` and `trialBalanceByDepartment`.
+- `src/app/api/mis-codes/route.ts` — full CRUD with soft-delete logic.
+- `src/app/api/mis-config/route.ts` — get/set the per-entity config.
+- `src/app/api/journals/route.ts` — replaces existing. Validates MIS
+  policy server-side before persisting.
+- `src/app/api/reports/route.ts` — replaces existing. Adds
+  `pnl-by-department` and `trial-balance-by-department` report types.
+- `src/app/page.tsx` — replaces existing. Adds MIS sidebar item
+  (Codes + Configuration tabs), adds MIS column to journal entry form
+  with live validation preview.
+- `tests/mis-policy.test.ts` — 14 unit tests, 137 total passing.
 
 ## Deploy steps
 
-1. Extract zip at the root of your `ledgerpro` repo
+1. Extract zip at root of your `ledgerpro` repo
 2. Commit + push:
    ```
    git add -A
-   git commit -m "Chart of Accounts import (CSV + QuickBooks IIF)"
+   git commit -m "MIS / multi-dimensional accounting"
    git push
    ```
-3. No new dependencies, no migrations, no env vars.
+3. Railway applies migration `0007_mis_dimensions`. No new dependencies,
+   no env vars.
+
+## The policy model
+
+Two-layer rules:
+
+| Master enabled? | Allow override? | Account type required? | Behavior |
+|---|---|---|---|
+| ❌ No | — | — | MIS field hidden everywhere |
+| ✔ Yes | ✔ Yes | Any | Field shown — warnings shown but never blocks |
+| ✔ Yes | ❌ No | ✔ Yes | Field shown — **blocks posting** if blank |
+| ✔ Yes | ❌ No | ❌ No | Field shown — optional for that line |
+
+Default required-for types when first enabled: **EXPENSE, REVENUE, COGS**
+(the typical P&L accounts). Adjust on the Configuration tab.
 
 ## How to use it
 
-1. Go to **Accounts** in the sidebar
-2. Click **↥ Import COA** (visible to OWNER / ADMIN / ACCOUNTANT)
-3. **Stage 1 — Pick a file:**
-   - Click "Download template" to get the LedgerPro CSV template
-     (`ledgerpro-coa-template.csv`)
-   - Drag & drop a CSV or IIF file, OR click "Choose file"
-   - Or expand "Paste the file content here" and paste directly
-4. Click **Preview import**
-5. **Stage 2 — Preview:**
-   - Each row is classified as **create** (new), **update** (matching code
-     exists with same type), or **conflict** (name/code collision OR type
-     mismatch — won't auto-apply)
-   - Parse warnings are shown in red
-   - If there are conflicts, an "Overwrite name-conflict rows" checkbox
-     appears. Use carefully — it reassigns existing accounts to the
-     import's code/name.
-   - Type conflicts are NEVER auto-applied. Resolve manually first.
-   - Click **Import N accounts** to apply
-6. **Stage 3 — Result:**
-   - Shows created / updated / skipped / parent links resolved
-   - Any per-row errors listed (rare — usually duplicate code)
+### Setup (OWNER / ADMIN)
 
-## QuickBooks IIF mapping
+1. **MIS / Departments** in sidebar → **Configuration** tab
+2. Toggle "Enable MIS coding on this entity" → ON
+3. Pick which account types require an MIS code (chip buttons —
+   tap to toggle). Default: EXPENSE, REVENUE, COGS.
+4. Decide override behavior:
+   - **Override OFF (strict)** — required lines BLOCK posting if missing
+   - **Override ON (lenient)** — required lines show a warning but allow posting
 
-When you import an IIF file from QuickBooks Desktop, account types are
-mapped automatically:
+### Create the codes (OWNER / ADMIN / ACCOUNTANT)
 
-| QB Type | LedgerPro Type | SubType set |
-|---|---|---|
-| BANK | ASSET | Bank (+isBankAccount=true) |
-| AR | ASSET | Accounts Receivable |
-| OCASSET | ASSET | Other Current Asset |
-| FIXASSET | ASSET | Fixed Asset |
-| OASSET | ASSET | Other Asset |
-| AP | LIABILITY | Accounts Payable |
-| CCARD | LIABILITY | Credit Card |
-| OCLIAB | LIABILITY | Other Current Liability |
-| LTLIAB | LIABILITY | Long Term Liability |
-| EQUITY | EQUITY | — |
-| INC | REVENUE | Income |
-| OINC | REVENUE | Other Income |
-| COGS | COGS | — |
-| EXP | EXPENSE | — |
-| OEXP | EXPENSE | Other Expense |
+1. **Codes** tab
+2. **+ New code** — enter a code (e.g. `DEPT01`) and a department name
+   (e.g. `Sales — North`)
+3. Repeat for each department. Soft cap is 10 (warning shown above 10,
+   not blocked).
 
-Unrecognized types (e.g. NONPOSTING) are reported as warnings and skipped.
+### Use them in journal entries
 
-QuickBooks encodes sub-accounts with colon-separated names like
-`Bank:Operating:USD`. The import parses these and resolves the parent
-linkage in a second pass after all accounts are created.
+1. **Journal Entries** → **+ New entry**
+2. The "MIS code" column appears in the lines table
+3. When entering an account, if the policy requires MIS for that type:
+   - **Strict**: the MIS dropdown shows red border; posting blocked
+   - **Lenient**: the MIS dropdown shows amber border; posting allowed
+     but a warning lists the affected lines
+4. Selecting an MIS code clears the warning for that line
 
-If an IIF row has no ACCNUM, the import assigns a placeholder code like
-`IIF-1` and warns you. **Edit those before posting any transactions.**
+### Run department reports
 
-## How to export Chart of Accounts from QuickBooks Desktop
+Add `?type=pnl-by-department` or `?type=trial-balance-by-department`
+to your existing reports API URL, with optional `from` and `to` dates.
+The response is a cross-tab:
 
-In QB Desktop:
-1. File → Utilities → Export → Lists to IIF Files
-2. Check **Chart of Accounts**
-3. Pick a save location → Save
-4. Upload that .IIF file in LedgerPro's import modal
+```
+{
+  "columns": [
+    { "id": "code_abc", "code": "DEPT01", "department": "Sales — North" },
+    { "id": "code_def", "code": "DEPT02", "department": "Sales — South" },
+    { "id": "_unallocated", "code": "(Unallocated)", "department": "No MIS code" }
+  ],
+  "rows": [
+    { "code": "6100", "name": "Rent Expense", "type": "EXPENSE",
+      "byColumn": { "code_abc": 1200, "code_def": 800, "_unallocated": 0 },
+      "total": 2000 }
+  ],
+  "totals": { "code_abc": 1200, "code_def": 800, "_unallocated": 0 }
+}
+```
 
-QB Online users don't have a direct IIF export; instead, export to Excel
-and convert to the LedgerPro CSV template format manually.
+Lines that don't have an MIS code go into the `(Unallocated)` column so
+the totals always tie back to the standard P&L / TB.
 
-## What about transaction history?
+The frontend integration of these into the Reports page is intentionally
+left to a follow-up — the API is in place so you can call it from
+custom dashboards or spreadsheets in the meantime.
 
-This pass imports the **structure** (chart of accounts) only — not
-historical journal entries. QuickBooks IIF transaction import already
-exists as a separate feature (sidebar item "IIF Import"). Both work
-together: import COA first, then transactions.
+## What stays the same
+
+- Entities without MIS enabled — no visible change anywhere
+- Existing journal entries (created before MIS was enabled) — no data
+  migration needed; their `misCodeId` is just NULL
+- Reports — all 10 existing reports unchanged; two new department
+  reports added alongside
+- Other modules (Payments, Recon, AP, Fixed Assets, etc.) — no MIS
+  integration in this pass. Their journals create entries with NULL
+  misCodeId, which is fine because MIS is required *per account type*
+  rather than per source
+
+## Soft-delete behavior
+
+If you try to delete an MIS code that's been used in journal entries:
+- System soft-deletes (sets `isActive = false`) so historical lines keep
+  their tag
+- The dropdown on new entries no longer shows it
+- The Codes tab can show it via "Show inactive" toggle, with "Reactivate"
+  option
+
+If you delete an unused MIS code:
+- Hard-deleted
+
+## Audit trail
+
+All MIS changes are audited:
+- `MIS_CONFIG_UPDATED` — changes to enable / requiredForTypes / allowOverride
+- `MIS_CODE_CREATED`, `MIS_CODE_UPDATED`, `MIS_CODE_DEACTIVATED`, `MIS_CODE_DELETED`
 
 ## Tests
 
-123 total tests pass. 14 new tests cover:
-- CSV template parsing (success + failure modes)
-- CSV header flexibility (case-insensitive, multiple naming variants)
-- CSV with QB-style type fallback
-- IIF normalization (type mapping, parent extraction from colon names,
-  missing-ACCNUM warning, unknown types)
-- Quoted CSV cells with commas and embedded quotes
-- QB account-type mapping completeness
+14 new tests pass:
+- Parse / serialize the comma-separated requiredForTypes string
+- Validation skipped when MIS disabled
+- Strict mode blocks missing codes on required types
+- Lenient mode downgrades errors to warnings
+- Non-required types ignored
+- Whitespace-only codes treated as missing
+- Multiple bad lines all reported
+
+137 total tests pass.
+
+## Known limits in this pass
+
+- Other posting surfaces (AP invoices, Payments, Recon adjustments,
+  Depreciation runs, Disposals) post journals with NULL misCodeId.
+  If you want those to require MIS, that's a follow-up — they need
+  per-module UI changes since the user doesn't see line-by-line dropdowns
+  on those screens.
+- Department reports have API support but no dedicated UI page yet.
+- The soft cap of 10 codes is a frontend warning only — no hard limit.
+- Codes can be edited but the `code` field itself is immutable
+  (department name and description can change).
