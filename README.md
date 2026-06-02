@@ -1,73 +1,93 @@
-# LedgerPro — Hotfix: complete pdfkit→pdf-lib swap (includes lock file)
+# LedgerPro — Uniform Title Case for UI labels
 
-## What actually went wrong
+168 label changes across `src/app/page.tsx` — applies a single consistent
+Title Case pattern to every user-facing label so the UI reads uniformly.
 
-My previous "swap pdfkit → pdf-lib" hotfix only shipped `package.json`. I
-forgot that **`package-lock.json` is the file Railway actually uses** to
-install dependencies (via `npm ci`). Your lock file on disk was still
-locked to pdfkit + fontkit + brotli from the original deploy, even though
-your `package.json` was up to date.
+## What changed
 
-Result: Railway followed the old lock file, tried to install `brotli`
-(which fontkit depends on), the native C compilation failed, and the
-whole build died — same symptom as before, with the actual fix never
-reaching the install step.
+- **Form labels** (`<label>` inside forms) — e.g. "Account code" → "Account Code"
+- **Card / section headers** — e.g. "Account summary" → "Account Summary"
+- **Table column headers** — e.g. "Account name" → "Account Name"
+- **KPI tile labels** — e.g. "Cash on hand" → "Cash on Hand"
+- **Status badge labels** — e.g. "Returned to requester" → "Returned to Requester"
+- **Detail key-value tuples** — e.g. "Acquisition date" → "Acquisition Date"
 
-This is on me. When swapping dependencies I should always ship both
-`package.json` AND `package-lock.json` together. Going forward I'll
-default to bundling both.
+## The Title Case rule
 
-## What this includes
+- First and last word always capitalized
+- Major words capitalized
+- Short connectors stay lowercase: `a, an, the, and, or, but, of, in, on,
+  at, to, for, by, with, from, as, vs, per, via, into, onto`
+- Preserved uppercase tokens: `AP, AR, GL, JE, TB, BS, PDF, CSV, OFX, QFX,
+  MIS, FX, IIF, API, ACH, YTD, KPI, DR, CR, ID, P&L, W-2, 1040-K, TOTP, QR,
+  SSN, URL, PIN, SQL, UI, OCR, 2FA, MFA, KYC, AML, etc.`
+- JSX expression interpolation (`{currentEntity?.name}`, `{a.assetNo}`, etc.)
+  preserved verbatim
 
-Four files (only one new from the previous hotfix):
+## What was NOT changed (intentional)
 
-- **`package-lock.json`** ← THE FIX. 96 KB. Clean lock file with:
-  - 0 references to `pdfkit`
-  - 0 references to `fontkit`
-  - 0 references to `brotli`
-  - 1 reference to `pdf-lib` (the replacement)
-  - exceljs entries intact
-- `package.json` — same as the previous hotfix (no pdfkit, has pdf-lib)
-- `next.config.js` — same as the previous hotfix (exceljs in
-  serverComponentsExternalPackages)
-- `src/lib/recon/render.ts` — same as the previous hotfix (pdf-lib-based
-  PDF rendering with ZapfDingbats tick marks)
+- **Toast messages and validation errors** — these are full sentences and
+  read naturally in sentence case ("Account created", "Authentication failed",
+  "Invoice not found")
+- **Audit-log action labels** — system-event descriptions
+- **Sidebar nav items** — already in Title Case
+- **Button text** — already mostly consistent
+- **Dropdown options inside `<option>` tags** that are value labels (e.g.
+  "Both — payments and receipts") — these are descriptive sentences
+
+## Examples
+
+| Before | After |
+|---|---|
+| Account code | Account Code |
+| Bank account | Bank Account |
+| Net income — this month | Net Income — This Month |
+| Top expenses — this month | Top Expenses — This Month |
+| Parent account (for ledger / subledger hierarchy) | Parent Account (for Ledger / Subledger Hierarchy) |
+| Dr Total / Cr Total | DR Total / CR Total |
+| Cash on hand | Cash on Hand |
+| Total received (posted) | Total Received (Posted) |
+| Returned to requester | Returned to Requester |
+| Fully depreciated | Fully Depreciated |
+| Import QB IIF file | Import QB IIF File |
+| Entity settings — {entity.name} | Entity Settings — {entity.name} |
+| Revenue vs Expense — last 6 months | Revenue vs Expense — Last 6 Months |
+
+## How it was done
+
+A small Python script targeted three safe JSX patterns:
+1. `<label style={S.label}>...</label>`
+2. `<div style={S.cardHeader}>...</div>`
+3. `[...].map(h => <th ...{h}...)` — table column header arrays
+
+Then a manual pass over KPI card `label:` properties and status-badge
+labels (scattered across the file in object literals).
+
+The Title Case function preserves JSX expressions, dollar amounts, and
+already-uppercase tokens so nothing semantic was changed — only the
+visible casing.
 
 ## Deploy
 
 ```
 cd C:\ledgerpro
-# extract the zip — overwrites all four files including package-lock.json
 git add -A
-git commit -m "Hotfix: sync package-lock.json — remove pdfkit/fontkit/brotli"
+git commit -m "Uniform Title Case across UI labels"
 git push
 ```
 
-Railway will now run `npm ci` against a clean lock file. No more brotli
-native compilation attempt. The install step should take ~30 seconds
-instead of dying at 17.
+No deps, no schema change, no migration, no env vars. One file.
 
-## Verify after deploy
+## Verify
 
-1. Build logs should show successful `npm install` / `npm ci`
-2. After deploy, Bank Recon → open any reconciliation → click **Export ▾**
-3. Click **PDF — Detailed** → file downloads
-4. Open the PDF — confirm tick marks render correctly:
-   - Completed recon: green ✓ + clearing date in the Cleared column
-   - In-progress recon: amber `*`
+After deploy, every page should read uniformly:
+- Form fields: "Account Code", "Account Name", "Bank Account"
+- Card headers: "Account Summary", "AP — Recent Invoices"
+- KPI tiles: "Cash on Hand", "AP Outstanding", "Net Income — This Month"
+- Table columns: "Account Name", "DR Total", "Book Value", "Received From"
 
-## What's NOT in this bundle
+If you spot any stragglers, tell me the exact text and I'll patch them.
 
-Nothing new beyond the lock file. The pdf-lib swap and ZapfDingbats tick
-rendering were already shipped in the previous hotfix; this just makes
-them actually installable on Railway.
+## Tests
 
-## Lessons learned (for me)
-
-1. **Always ship `package-lock.json` when dependencies change.** It's the
-   source of truth for `npm ci`, which is what most production builds use.
-2. **Native deps in transitive dependencies are the silent killer** of
-   serverless deploys. Always prefer pure-JS alternatives.
-3. **17-second build failures are install-stage failures**, not compile
-   failures. Future me: don't chase webpack ghosts when the timer says
-   sub-30-seconds.
+All 173 tests continue to pass.

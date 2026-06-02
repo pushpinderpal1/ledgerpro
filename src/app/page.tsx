@@ -412,7 +412,7 @@ function AuthScreen({ authPage, setAuthPage, onAuth }: {
             <div style={{ fontSize: 13, color: '#475569', marginBottom: 14, lineHeight: 1.5 }}>
               Open your authenticator app and enter the 6-digit code. Or use one of your one-time backup codes.
             </div>
-            <label style={S.label}>Authentication code</label>
+            <label style={S.label}>Authentication Code</label>
             <input
               style={{ ...S.input, fontSize: 18, fontFamily: 'monospace', letterSpacing: 4, textAlign: 'center' }}
               value={twoFactorCode}
@@ -433,9 +433,9 @@ function AuthScreen({ authPage, setAuthPage, onAuth }: {
           <form onSubmit={handle}>
             {authPage === 'register' && (
               <>
-                <label style={S.label}>Full name</label>
+                <label style={S.label}>Full Name</label>
                 <input style={S.input} value={form.name} onChange={e => setForm(f => ({...f, name: e.target.value}))} placeholder="Jane Smith" required />
-                <label style={S.label}>Company / Firm name</label>
+                <label style={S.label}>Company / Firm Name</label>
                 <input style={S.input} value={form.firmName} onChange={e => setForm(f => ({...f, firmName: e.target.value}))} placeholder="Apex Accounting LLC" required />
               </>
             )}
@@ -519,13 +519,13 @@ function DashboardPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') =
   // KPI cards (4 wide)
   const cards = [
     {
-      label: 'Cash on hand',
+      label: 'Cash on Hand',
       value: `$${fmt(kpis.cashBalance)}`,
       sub: `${kpis.cashAccountCount} bank account${kpis.cashAccountCount === 1 ? '' : 's'}`,
       color: kpis.cashBalance >= 0 ? '#0891b2' : '#dc2626',
     },
     {
-      label: 'Net income — this month',
+      label: 'Net Income — This Month',
       value: `$${fmt(kpis.thisMonth.netIncome)}`,
       sub: `Revenue $${fmt(kpis.thisMonth.revenue)} − Exp $${fmt(kpis.thisMonth.expense + kpis.thisMonth.cogs)}`,
       color: niPositive ? '#16a34a' : '#dc2626',
@@ -537,7 +537,7 @@ function DashboardPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') =
       color: ytdPositive ? '#16a34a' : '#dc2626',
     },
     {
-      label: 'AP outstanding',
+      label: 'AP Outstanding',
       value: `$${fmt(kpis.apOpen)}`,
       sub: kpis.apOverdueCount > 0 ? `${kpis.apOverdueCount} overdue ($${fmt(kpis.apOverdue)})` : 'No overdue',
       color: kpis.apOverdueCount > 0 ? '#dc2626' : '#7c3aed',
@@ -567,7 +567,7 @@ function DashboardPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') =
       {/* Trend chart + Top expenses */}
       <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 16, marginTop: 16 }}>
         <div style={S.card}>
-          <div style={S.cardHeader}>Revenue vs Expense — last 6 months</div>
+          <div style={S.cardHeader}>Revenue vs Expense — Last 6 Months</div>
           <svg viewBox={`0 0 ${chartW} ${chartH}`} style={{ width: '100%', height: 'auto' }}>
             {/* Y axis grid lines */}
             {[0, 0.25, 0.5, 0.75, 1].map((p, i) => {
@@ -604,7 +604,7 @@ function DashboardPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') =
           </svg>
         </div>
         <div style={S.card}>
-          <div style={S.cardHeader}>Top expenses — this month</div>
+          <div style={S.cardHeader}>Top Expenses — This Month</div>
           {kpis.topExpenses.length === 0 ? (
             <div style={{ padding: 20, color: '#94a3b8', fontSize: 13, textAlign: 'center' }}>No expenses yet this month</div>
           ) : (
@@ -664,7 +664,7 @@ function AccountsWidget() {
   }))
   return (
     <div style={S.card}>
-      <div style={S.cardHeader}>Account summary</div>
+      <div style={S.cardHeader}>Account Summary</div>
       <table style={S.table}>
         <thead><tr>{['Type','Count'].map(h => <th key={h} style={S.th}>{h}</th>)}</tr></thead>
         <tbody>{byType.map(r => (
@@ -687,7 +687,7 @@ function ApWidget() {
   }, [currentEntity])
   return (
     <div style={S.card}>
-      <div style={S.cardHeader}>AP — recent invoices</div>
+      <div style={S.cardHeader}>AP — Recent Invoices</div>
       <table style={S.table}>
         <thead><tr>{['Vendor','Amount','Due','Status'].map(h => <th key={h} style={S.th}>{h}</th>)}</tr></thead>
         <tbody>{invoices.map(inv => (
@@ -844,7 +844,7 @@ function AccountsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') =>
           </div>
           <div style={S.formGrid}>
             <div>
-              <label style={S.label}>Account code</label>
+              <label style={S.label}>Account Code</label>
               <input
                 style={{ ...S.input, ...(editingInUse ? { background: '#f8fafc', color: '#64748b' } : {}) }}
                 value={form.code} disabled={editingInUse}
@@ -853,7 +853,7 @@ function AccountsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') =>
               />
             </div>
             <div>
-              <label style={S.label}>Account name</label>
+              <label style={S.label}>Account Name</label>
               <input style={S.input} value={form.name} onChange={e => setForm(f => ({...f,name:e.target.value}))} placeholder="Cash & Equivalents" />
             </div>
             <div>
@@ -871,7 +871,7 @@ function AccountsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') =>
               <input style={S.input} value={form.subType} onChange={e => setForm(f => ({...f,subType:e.target.value}))} placeholder="e.g. Current Asset, Bank, Long-Term Debt" />
             </div>
             <div>
-              <label style={S.label}>Parent account (for ledger / subledger hierarchy)</label>
+              <label style={S.label}>Parent Account (for Ledger / Subledger Hierarchy)</label>
               <select style={S.select} value={form.parentId} onChange={e => setForm(f => ({...f,parentId:e.target.value}))}>
                 <option value="">— (top-level)</option>
                 {parentOptions.map(p => <option key={p.id} value={p.id}>{p.code} — {p.name}</option>)}
@@ -894,7 +894,7 @@ function AccountsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') =>
 
       <div style={S.card}>
         <table style={S.table}>
-          <thead><tr>{['Code','Account name','Type','Sub-type','Bank?','Usage',''].map(h => <th key={h} style={S.th}>{h}</th>)}</tr></thead>
+          <thead><tr>{['Code','Account Name','Type','Sub-type','Bank?','Usage',''].map(h => <th key={h} style={S.th}>{h}</th>)}</tr></thead>
           <tbody>{tree.map(a => (
             <tr key={a.id}>
               <td style={{ ...S.td, fontFamily: 'monospace', fontSize: 12, paddingLeft: 8 + a.depth * 24 }}>
@@ -1264,7 +1264,7 @@ function JournalsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') =>
 
       {showForm && (
         <div style={{ ...S.card, marginBottom: 16 }}>
-          <div style={S.cardHeader}>New journal entry</div>
+          <div style={S.cardHeader}>New Journal Entry</div>
           <div style={S.formGrid}>
             <div><label style={S.label}>Date</label><input style={S.input} type="date" value={hdr.date} onChange={e => setHdr(h => ({...h,date:e.target.value}))} /></div>
             <div><label style={S.label}>Description</label><input style={S.input} value={hdr.description} onChange={e => setHdr(h => ({...h,description:e.target.value}))} placeholder="e.g. Monthly payroll" /></div>
@@ -1335,7 +1335,7 @@ function JournalsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') =>
 
       <div style={S.card}>
         <table style={S.table}>
-          <thead><tr>{['Ref','Date','Description','Status','Dr Total','Cr Total','Lines'].map(h => <th key={h} style={S.th}>{h}</th>)}</tr></thead>
+          <thead><tr>{['Ref','Date','Description','Status','DR Total','CR Total','Lines'].map(h => <th key={h} style={S.th}>{h}</th>)}</tr></thead>
           <tbody>{entries.map(e => {
             const dr = e.lines.reduce((s,l) => s + Number(l.debit),  0)
             const cr = e.lines.reduce((s,l) => s + Number(l.credit), 0)
@@ -1400,8 +1400,8 @@ function IifPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => void
   return (
     <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }}>
       <div style={S.card}>
-        <div style={S.cardHeader}>Import QB IIF file</div>
-        <label style={S.label}>Paste IIF content</label>
+        <div style={S.cardHeader}>Import QB IIF File</div>
+        <label style={S.label}>Paste IIF Content</label>
         <textarea style={{ ...S.input, fontFamily:'monospace', fontSize:11, height:160, resize:'vertical', marginBottom:12 }}
           value={importText} onChange={e => setImportText(e.target.value)} placeholder="Paste .IIF file content here…" />
         <div style={{ display:'flex', gap:8, marginBottom:16 }}>
@@ -1430,7 +1430,7 @@ function IifPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => void
 
       <div style={S.card}>
         <div style={S.cardHeader}>Export to QB IIF</div>
-        <label style={S.label}>Export type</label>
+        <label style={S.label}>Export Type</label>
         <select style={S.select} value={exportType} onChange={e => setExportType(e.target.value)}>
           <option value="trns">Transactions (TRNS)</option>
           <option value="accnt">Chart of Accounts (ACCNT)</option>
@@ -1601,14 +1601,14 @@ function ApPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => void 
 
       {showForm && (
         <div style={{ ...S.card, marginBottom:16 }}>
-          <div style={S.cardHeader}>New AP invoice</div>
+          <div style={S.cardHeader}>New AP Invoice</div>
           <div style={S.formGrid}>
             <div><label style={S.label}>Vendor</label><input style={S.input} value={form.vendor} onChange={e => setForm(f=>({...f,vendor:e.target.value}))} placeholder="Vendor name" /></div>
             <div><label style={S.label}>Invoice #</label><input style={S.input} value={form.invoiceNo} onChange={e => setForm(f=>({...f,invoiceNo:e.target.value}))} placeholder="INV-001" /></div>
-            <div><label style={S.label}>Invoice date</label><input style={S.input} type="date" value={form.invoiceDate} onChange={e => setForm(f=>({...f,invoiceDate:e.target.value}))} /></div>
-            <div><label style={S.label}>Due date</label><input style={S.input} type="date" value={form.dueDate} onChange={e => setForm(f=>({...f,dueDate:e.target.value}))} /></div>
+            <div><label style={S.label}>Invoice Date</label><input style={S.input} type="date" value={form.invoiceDate} onChange={e => setForm(f=>({...f,invoiceDate:e.target.value}))} /></div>
+            <div><label style={S.label}>Due Date</label><input style={S.input} type="date" value={form.dueDate} onChange={e => setForm(f=>({...f,dueDate:e.target.value}))} /></div>
             <div><label style={S.label}>Amount</label><input style={S.input} value={form.amount} onChange={e => setForm(f=>({...f,amount:e.target.value}))} placeholder="0.00" /></div>
-            <div><label style={S.label}>GL account</label>
+            <div><label style={S.label}>GL Account</label>
               <select style={S.select} value={form.accountId} onChange={e => setForm(f=>({...f,accountId:e.target.value}))}>
                 <option value="">Select account…</option>
                 {accounts.filter(a => a.type==='EXPENSE'||a.type==='COGS').map(a => <option key={a.id} value={a.id}>{a.code} — {a.name}</option>)}
@@ -1624,7 +1624,7 @@ function ApPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => void 
 
       <div style={S.card}>
         <table style={S.table}>
-          <thead><tr>{['Vendor','Invoice #','Invoice date','Due date','Amount','Balance','Aging','Status',''].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
+          <thead><tr>{['Vendor','Invoice #','Invoice Date','Due Date','Amount','Balance','Aging','Status',''].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
           <tbody>{invoices.map(inv => (
             <tr key={inv.id}>
               <td style={{...S.td,fontWeight:500}}>{inv.vendor}</td>
@@ -1747,7 +1747,7 @@ function PayInvoiceModal({ invoice, accounts, onClose, onPaid, showToast }: {
             <input style={S.input} value={amount} onChange={e => setAmount(e.target.value)} placeholder="0.00" />
           </div>
           <div>
-            <label style={S.label}>Payment date</label>
+            <label style={S.label}>Payment Date</label>
             <input style={S.input} type="date" value={paidOn} onChange={e => setPaidOn(e.target.value)} />
           </div>
           <div>
@@ -1761,14 +1761,14 @@ function PayInvoiceModal({ invoice, accounts, onClose, onPaid, showToast }: {
             </select>
           </div>
           <div>
-            <label style={S.label}>From bank account</label>
+            <label style={S.label}>From Bank Account</label>
             <select style={S.select} value={bankAccountId} onChange={e => setBankAccountId(e.target.value)} disabled={bankAccounts.length === 0}>
               <option value="">— select —</option>
               {bankAccounts.map(a => <option key={a.id} value={a.id}>{a.code} — {a.name}</option>)}
             </select>
           </div>
           <div style={{ gridColumn: '1/-1' }}>
-            <label style={S.label}>Reference {method === 'CHEQUE' ? '(cheque #)' : '(optional)'}</label>
+            <label style={S.label}>Reference {method === 'CHEQUE' ? '(Cheque #)' : '(optional)'}</label>
             <input style={S.input} value={reference} onChange={e => setReference(e.target.value)} placeholder={method === 'CHEQUE' ? 'e.g. 1023' : 'Confirmation, memo, etc.'} />
           </div>
         </div>
@@ -1828,18 +1828,18 @@ function PayrollPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => 
 
       {showForm && (
         <div style={{...S.card,marginBottom:16}}>
-          <div style={S.cardHeader}>New employee</div>
+          <div style={S.cardHeader}>New Employee</div>
           <div style={S.formGrid}>
             <div><label style={S.label}>Employee #</label><input style={S.input} value={form.employeeNo} onChange={e=>setForm(f=>({...f,employeeNo:e.target.value}))} placeholder="EMP001" /></div>
-            <div><label style={S.label}>First name</label><input style={S.input} value={form.firstName} onChange={e=>setForm(f=>({...f,firstName:e.target.value}))} /></div>
-            <div><label style={S.label}>Last name</label><input style={S.input} value={form.lastName} onChange={e=>setForm(f=>({...f,lastName:e.target.value}))} /></div>
-            <div><label style={S.label}>Pay type</label>
+            <div><label style={S.label}>First Name</label><input style={S.input} value={form.firstName} onChange={e=>setForm(f=>({...f,firstName:e.target.value}))} /></div>
+            <div><label style={S.label}>Last Name</label><input style={S.input} value={form.lastName} onChange={e=>setForm(f=>({...f,lastName:e.target.value}))} /></div>
+            <div><label style={S.label}>Pay Type</label>
               <select style={S.select} value={form.payType} onChange={e=>setForm(f=>({...f,payType:e.target.value}))}>
                 <option>SALARY</option><option>HOURLY</option><option>COMMISSION</option>
               </select>
             </div>
-            <div><label style={S.label}>Annual salary / Hourly rate</label><input style={S.input} value={form.payType==='SALARY'?form.salary:form.hourlyRate} onChange={e=>setForm(f=>form.payType==='SALARY'?{...f,salary:e.target.value}:{...f,hourlyRate:e.target.value})} placeholder="60000" /></div>
-            <div><label style={S.label}>Filing status</label>
+            <div><label style={S.label}>Annual Salary / Hourly Rate</label><input style={S.input} value={form.payType==='SALARY'?form.salary:form.hourlyRate} onChange={e=>setForm(f=>form.payType==='SALARY'?{...f,salary:e.target.value}:{...f,hourlyRate:e.target.value})} placeholder="60000" /></div>
+            <div><label style={S.label}>Filing Status</label>
               <select style={S.select} value={form.filingStatus} onChange={e=>setForm(f=>({...f,filingStatus:e.target.value}))}>
                 <option>SINGLE</option><option>MARRIED</option><option>MFS</option><option>HH</option>
               </select>
@@ -1850,7 +1850,7 @@ function PayrollPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => 
               </select>
             </div>
             <div><label style={S.label}>401(k) %</label><input style={S.input} value={form.retirement401k} onChange={e=>setForm(f=>({...f,retirement401k:e.target.value}))} placeholder="0.03" /></div>
-            <div><label style={S.label}>Health deduction</label><input style={S.input} value={form.healthDeduction} onChange={e=>setForm(f=>({...f,healthDeduction:e.target.value}))} placeholder="150" /></div>
+            <div><label style={S.label}>Health Deduction</label><input style={S.input} value={form.healthDeduction} onChange={e=>setForm(f=>({...f,healthDeduction:e.target.value}))} placeholder="150" /></div>
             <div><label style={S.label}>Department</label><input style={S.input} value={form.department} onChange={e=>setForm(f=>({...f,department:e.target.value}))} /></div>
           </div>
           <div style={{display:'flex',gap:8}}>
@@ -1862,7 +1862,7 @@ function PayrollPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => 
 
       <div style={S.card}>
         <table style={S.table}>
-          <thead><tr>{['Emp #','Name','Title','Dept','Pay type','Rate','State','Status'].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
+          <thead><tr>{['Emp #','Name','Title','Dept','Pay Type','Rate','State','Status'].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
           <tbody>{employees.map(e => (
             <tr key={e.id}>
               <td style={{...S.td,fontFamily:'monospace',fontSize:11}}>{e.employeeNo}</td>
@@ -1943,7 +1943,7 @@ function W2Page({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => void 
           </div>
           {w2s.length > 0 && (
             <div style={{...S.card,marginTop:16,maxWidth:460}}>
-              <div style={S.cardHeader}>W-2 preview — {employees[0]?.firstName} {employees[0]?.lastName}</div>
+              <div style={S.cardHeader}>W-2 Preview — {employees[0]?.firstName} {employees[0]?.lastName}</div>
               {(() => {
                 const w = w2s[0] as Record<string,number|string>|undefined
                 if (!w) return null
@@ -2045,9 +2045,9 @@ function UsersPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => vo
 
       {showInvite && (
         <div style={{...S.card,marginBottom:16}}>
-          <div style={S.cardHeader}>Invite user to {currentEntity?.name}</div>
+          <div style={S.cardHeader}>Invite User to {currentEntity?.name}</div>
           <div style={S.formGrid}>
-            <div><label style={S.label}>Full name</label><input style={S.input} value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))} placeholder="Jane Smith" /></div>
+            <div><label style={S.label}>Full Name</label><input style={S.input} value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))} placeholder="Jane Smith" /></div>
             <div><label style={S.label}>Email</label><input style={S.input} type="email" value={form.email} onChange={e=>setForm(f=>({...f,email:e.target.value}))} placeholder="jane@firm.com" /></div>
             <div>
               <label style={S.label}>Role</label>
@@ -2088,7 +2088,7 @@ function UsersPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => vo
 
       <div style={S.card}>
         <table style={S.table}>
-          <thead><tr>{['User','Email','Role','Last login','Status','Actions'].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
+          <thead><tr>{['User','Email','Role','Last Login','Status','Actions'].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
           <tbody>{users.map(u => (
             <tr key={u.userId}>
               <td style={{...S.td,fontWeight:500}}>{u.user.name}</td>
@@ -2129,9 +2129,9 @@ function SettingsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') =>
   return (
     <div style={{ maxWidth: 700 }}>
       <div style={{ ...S.card, marginBottom: 16 }}>
-        <div style={S.cardHeader}>Entity settings — {currentEntity?.name}</div>
+        <div style={S.cardHeader}>Entity Settings — {currentEntity?.name}</div>
         <div style={S.formGrid}>
-          <div><label style={S.label}>Legal entity name</label><input style={S.input} value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))} /></div>
+          <div><label style={S.label}>Legal Entity Name</label><input style={S.input} value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))} /></div>
           <div><label style={S.label}>Tax ID / EIN</label><input style={S.input} value={form.taxId} onChange={e=>setForm(f=>({...f,taxId:e.target.value}))} placeholder="12-3456789" /></div>
           <div><label style={S.label}>Email</label><input style={S.input} type="email" value={form.email} onChange={e=>setForm(f=>({...f,email:e.target.value}))} /></div>
           <div><label style={S.label}>Currency</label>
@@ -2139,7 +2139,7 @@ function SettingsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') =>
               {['USD','EUR','GBP','CAD','AUD','INR'].map(c=><option key={c}>{c}</option>)}
             </select>
           </div>
-          <div><label style={S.label}>Fiscal year start</label>
+          <div><label style={S.label}>Fiscal Year Start</label>
             <select style={S.select} value={form.fiscalMonth} onChange={e=>setForm(f=>({...f,fiscalMonth:+e.target.value}))}>
               {['January','February','March','April','May','June','July','August','September','October','November','December'].map((m,i)=><option key={i+1} value={i+1}>{m}</option>)}
             </select>
@@ -2425,7 +2425,7 @@ function TwoFactorPanel({ showToast }: { showToast: (m: string, t?: 'ok'|'err') 
           </div>
           <label style={S.label}>Password</label>
           <input style={S.input} type="password" value={disablePassword} onChange={e => setDisablePassword(e.target.value)} placeholder="••••••••" />
-          <label style={S.label}>Authentication code</label>
+          <label style={S.label}>Authentication Code</label>
           <input style={{ ...S.input, fontFamily: 'monospace', letterSpacing: 4, textAlign: 'center', maxWidth: 240 }} value={disableCode} onChange={e => setDisableCode(e.target.value)} placeholder="123456" />
           <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
             <button style={{ ...S.btn, color: '#dc2626', borderColor: '#fecaca' }} disabled={busy || !disablePassword || disableCode.length < 6} onClick={confirmDisable}>Disable 2FA</button>
@@ -2440,7 +2440,7 @@ function TwoFactorPanel({ showToast }: { showToast: (m: string, t?: 'ok'|'err') 
           <div style={{ fontSize: 13, color: '#475569', lineHeight: 1.6, marginBottom: 12 }}>
             Generating new backup codes will invalidate all existing ones. Enter a current 6-digit code (or one unused backup code) to confirm.
           </div>
-          <label style={S.label}>Authentication code</label>
+          <label style={S.label}>Authentication Code</label>
           <input style={{ ...S.input, fontFamily: 'monospace', letterSpacing: 4, textAlign: 'center', maxWidth: 240 }} value={regenCode} onChange={e => setRegenCode(e.target.value)} placeholder="123456" autoFocus />
           <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
             <button style={{ ...S.btn, ...S.btnPrimary }} disabled={busy || regenCode.length < 6} onClick={confirmRegenerate}>Regenerate</button>
@@ -2641,18 +2641,18 @@ function PaymentsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') =>
           </div>
           <div style={S.formGrid}>
             <div>
-              <label style={S.label}>Pay from (bank account)</label>
+              <label style={S.label}>Pay from (Bank Account)</label>
               <select style={S.select} value={form.bankAccountId} onChange={e => setForm(f=>({...f, bankAccountId:e.target.value}))}>
                 <option value="">Select bank account…</option>
                 {bankAccounts.map(a => <option key={a.id} value={a.id}>{a.code} — {a.name}</option>)}
               </select>
               {bankAccounts.length === 0 && <div style={{ fontSize:11, color:'#dc2626', marginTop:4 }}>No bank accounts. Mark an account as bank account in Chart of Accounts.</div>}
             </div>
-            <div><label style={S.label}>Pay to</label><input style={S.input} value={form.payeeName} onChange={e => setForm(f=>({...f, payeeName:e.target.value}))} placeholder="Payee name" /></div>
+            <div><label style={S.label}>Pay To</label><input style={S.input} value={form.payeeName} onChange={e => setForm(f=>({...f, payeeName:e.target.value}))} placeholder="Payee name" /></div>
             <div><label style={S.label}>Amount</label><input style={S.input} value={form.amount} onChange={e => setForm(f=>({...f, amount:e.target.value}))} placeholder="0.00" /></div>
-            <div><label style={S.label}>Payment date</label><input style={S.input} type="date" value={form.paymentDate} onChange={e => setForm(f=>({...f, paymentDate:e.target.value}))} /></div>
+            <div><label style={S.label}>Payment Date</label><input style={S.input} type="date" value={form.paymentDate} onChange={e => setForm(f=>({...f, paymentDate:e.target.value}))} /></div>
             <div>
-              <label style={S.label}>Expense / offset account</label>
+              <label style={S.label}>Expense / Offset Account</label>
               <select style={S.select} value={form.expenseAccountId} onChange={e => setForm(f=>({...f, expenseAccountId:e.target.value}))}>
                 <option value="">Select account…</option>
                 {expenseAccounts.map(a => <option key={a.id} value={a.id}>{a.code} — {a.name}</option>)}
@@ -2668,15 +2668,15 @@ function PaymentsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') =>
             )}
 
             {method === 'ACH' && (<>
-              <div><label style={S.label}>Routing # (9 digits)</label><input style={S.input} value={form.achRoutingNo} onChange={e => setForm(f=>({...f, achRoutingNo:e.target.value.replace(/\D/g,'').slice(0,9)}))} placeholder="123456789" /></div>
+              <div><label style={S.label}>Routing # (9 Digits)</label><input style={S.input} value={form.achRoutingNo} onChange={e => setForm(f=>({...f, achRoutingNo:e.target.value.replace(/\D/g,'').slice(0,9)}))} placeholder="123456789" /></div>
               <div><label style={S.label}>Account #</label><input style={S.input} value={form.achAccountNo} onChange={e => setForm(f=>({...f, achAccountNo:e.target.value}))} placeholder="Will be masked to last 4" /></div>
               <div>
-                <label style={S.label}>Account type</label>
+                <label style={S.label}>Account Type</label>
                 <select style={S.select} value={form.achAccountType} onChange={e => setForm(f=>({...f, achAccountType: e.target.value as 'CHECKING'|'SAVINGS'}))}>
                   <option value="CHECKING">Checking</option><option value="SAVINGS">Savings</option>
                 </select>
               </div>
-              <div><label style={S.label}>Effective date</label><input style={S.input} type="date" value={form.achEffectiveDate} onChange={e => setForm(f=>({...f, achEffectiveDate:e.target.value}))} /></div>
+              <div><label style={S.label}>Effective Date</label><input style={S.input} type="date" value={form.achEffectiveDate} onChange={e => setForm(f=>({...f, achEffectiveDate:e.target.value}))} /></div>
             </>)}
           </div>
           <div style={{ display:'flex', gap:8 }}>
@@ -2900,16 +2900,16 @@ function ReconPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => vo
 
         <div style={S.kpiGrid}>
           {[
-            { label:'Beginning balance', value:`$${fmt(summary.beginningBalance)}`, color:'#475569' },
-            { label:'Cleared balance', value:`$${fmt(summary.clearedBalance)}`, color:'#0891b2' },
-            { label:'Statement ending', value:`$${fmt(summary.endingBalance)}`, color:'#475569' },
+            { label:'Beginning Balance', value:`$${fmt(summary.beginningBalance)}`, color:'#475569' },
+            { label:'Cleared Balance', value:`$${fmt(summary.clearedBalance)}`, color:'#0891b2' },
+            { label:'Statement Ending', value:`$${fmt(summary.endingBalance)}`, color:'#475569' },
             { label:'Difference', value:`$${fmt(summary.difference)}`, color: summary.isBalanced ? '#16a34a' : '#dc2626' },
           ].map(k => <div key={k.label} style={S.kpiCard}><div style={{fontSize:11,color:'#94a3b8',marginBottom:4}}>{k.label}</div><div style={{fontSize:22,fontWeight:700,color:k.color}}>{k.value}</div></div>)}
         </div>
 
         {state.statementLines.length > 0 && (
           <div style={{ ...S.card, marginBottom:16 }}>
-            <div style={S.cardHeader}>Statement lines ({state.statementLines.filter(s => s.isMatched).length} of {state.statementLines.length} matched)</div>
+            <div style={S.cardHeader}>Statement Lines ({state.statementLines.filter(s => s.isMatched).length} of {state.statementLines.length} Matched)</div>
             <table style={S.table}>
               <thead><tr>{['Date','Description','Reference','Amount','Matched'].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
               <tbody>{state.statementLines.map(sl => (
@@ -2926,9 +2926,9 @@ function ReconPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => vo
         )}
 
         <div style={S.card}>
-          <div style={S.cardHeader}>Book transactions — tick to clear, set the date money cleared the bank</div>
+          <div style={S.cardHeader}>Book Transactions — Tick to Clear, Set the Date Money Cleared the Bank</div>
           <table style={S.table}>
-            <thead><tr>{['','Date','Ref','Description','Withdrawal','Deposit','Clearing date'].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
+            <thead><tr>{['','Date','Ref','Description','Withdrawal','Deposit','Clearing Date'].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
             <tbody>
               {allLines.length === 0 && (
                 <tr><td colSpan={7} style={{ padding: 24, background: '#fff' }}>
@@ -2976,20 +2976,20 @@ function ReconPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => vo
 
       {showStart && (
         <div style={{ ...S.card, marginBottom:16 }}>
-          <div style={S.cardHeader}>Start a new reconciliation</div>
+          <div style={S.cardHeader}>Start a New Reconciliation</div>
           <div style={S.formGrid}>
             <div>
-              <label style={S.label}>Bank account</label>
+              <label style={S.label}>Bank Account</label>
               <select style={S.select} value={startForm.bankAccountId} onChange={e => setStartForm(f=>({...f, bankAccountId:e.target.value}))}>
                 <option value="">Select bank account…</option>
                 {bankAccounts.map(a => <option key={a.id} value={a.id}>{a.code} — {a.name}</option>)}
               </select>
             </div>
-            <div><label style={S.label}>Statement date</label><input style={S.input} type="date" value={startForm.statementDate} onChange={e => setStartForm(f=>({...f, statementDate:e.target.value}))} /></div>
-            <div><label style={S.label}>Beginning balance</label><input style={S.input} value={startForm.beginningBalance} onChange={e => setStartForm(f=>({...f, beginningBalance:e.target.value}))} placeholder="0.00" /></div>
-            <div><label style={S.label}>Ending balance (from statement)</label><input style={S.input} value={startForm.endingBalance} onChange={e => setStartForm(f=>({...f, endingBalance:e.target.value}))} placeholder="0.00" /></div>
+            <div><label style={S.label}>Statement Date</label><input style={S.input} type="date" value={startForm.statementDate} onChange={e => setStartForm(f=>({...f, statementDate:e.target.value}))} /></div>
+            <div><label style={S.label}>Beginning Balance</label><input style={S.input} value={startForm.beginningBalance} onChange={e => setStartForm(f=>({...f, beginningBalance:e.target.value}))} placeholder="0.00" /></div>
+            <div><label style={S.label}>Ending Balance (from Statement)</label><input style={S.input} value={startForm.endingBalance} onChange={e => setStartForm(f=>({...f, endingBalance:e.target.value}))} placeholder="0.00" /></div>
             <div style={{ gridColumn:'1 / -1' }}>
-              <label style={S.label}>Upload statement (optional — CSV or OFX/QFX)</label>
+              <label style={S.label}>Upload Statement (Optional — CSV or OFX/QFX)</label>
               <input type="file" accept=".csv,.ofx,.qfx,text/csv" onChange={e => onFileChosen(e.target.files?.[0] ?? null)} style={{ display:'block', marginTop:4 }} />
               {startForm.statementFile && <div style={{ fontSize:11, color:'#16a34a', marginTop:4 }}>✓ {startForm.statementFile} — will auto-match on start</div>}
               <div style={{ fontSize:11, color:'#94a3b8', marginTop:4 }}>If no file, you can still reconcile manually by ticking entries below.</div>
@@ -3068,7 +3068,7 @@ function ReconPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => vo
 
       <div style={S.card}>
         <table style={S.table}>
-          <thead><tr>{['Statement date','Bank account','Beginning','Ending','Status',''].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
+          <thead><tr>{['Statement Date','Bank Account','Beginning','Ending','Status',''].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
           <tbody>
             {recons.length === 0 && <tr><td style={{ ...S.td, textAlign:'center', color:'#94a3b8' }} colSpan={6}>No reconciliations yet</td></tr>}
             {recons.map(r => (
@@ -3292,17 +3292,17 @@ function PeriodsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => 
 
       {showForm && (
         <div style={{ ...S.card, marginBottom: 16 }}>
-          <div style={S.cardHeader}>Lock a period</div>
+          <div style={S.cardHeader}>Lock a Period</div>
           <div style={{ fontSize: 13, color: '#475569', marginBottom: 14, lineHeight: 1.5 }}>
             Close the books up to and including this date. After locking, no entries dated on or before <strong>{form.periodEnd}</strong> can be created or modified — including payment posts and voids. OWNER or ADMIN can release the lock later if you need to make corrections.
           </div>
           <div style={S.formGrid}>
             <div>
-              <label style={S.label}>Lock through (inclusive)</label>
+              <label style={S.label}>Lock Through (Inclusive)</label>
               <input style={S.input} type="date" value={form.periodEnd} max={today} onChange={e => setForm(f => ({ ...f, periodEnd: e.target.value }))} />
             </div>
             <div style={{ gridColumn: '1 / -1' }}>
-              <label style={S.label}>Reason (optional)</label>
+              <label style={S.label}>Reason (Optional)</label>
               <input style={S.input} value={form.reason} onChange={e => setForm(f => ({ ...f, reason: e.target.value }))} placeholder="e.g. April 2026 close" />
             </div>
           </div>
@@ -3314,9 +3314,9 @@ function PeriodsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => 
       )}
 
       <div style={S.card}>
-        <div style={S.cardHeader}>Lock history</div>
+        <div style={S.cardHeader}>Lock History</div>
         <table style={S.table}>
-          <thead><tr>{['Period end','Locked at','Reason','Released at','Status',''].map(h => <th key={h} style={S.th}>{h}</th>)}</tr></thead>
+          <thead><tr>{['Period End','Locked At','Reason','Released At','Status',''].map(h => <th key={h} style={S.th}>{h}</th>)}</tr></thead>
           <tbody>
             {locks.length === 0 && <tr><td style={{ ...S.td, textAlign: 'center', color: '#94a3b8' }} colSpan={6}>No locks created yet</td></tr>}
             {locks.map(l => {
@@ -3571,7 +3571,7 @@ function ReportViewer({ def, showToast, onBack }: { def: ReportDef; showToast: (
           )}
           {def.needsAsOf && (
             <div>
-              <label style={S.label}>As of</label>
+              <label style={S.label}>As Of</label>
               <input style={S.input} type="date" value={asOf} onChange={e => setAsOf(e.target.value)} />
             </div>
           )}
@@ -4589,9 +4589,9 @@ function AssetCategories({ showToast, canWrite }: { showToast: (m: string, t?: '
     if (!currentEntity) return
     const errs: string[] = []
     if (!form.name) errs.push('Name')
-    if (!form.assetAccountId) errs.push('Asset account')
+    if (!form.assetAccountId) errs.push('Asset Account')
     if (!form.accumDepAccountId) errs.push('Accumulated depreciation account')
-    if (!form.depExpenseAccountId) errs.push('Depreciation expense account')
+    if (!form.depExpenseAccountId) errs.push('Depreciation Expense Account')
     if (errs.length) return showToast(`Required: ${errs.join(', ')}`, 'err')
 
     const res = await fetch('/api/asset-categories', {
@@ -4636,38 +4636,38 @@ function AssetCategories({ showToast, canWrite }: { showToast: (m: string, t?: '
 
       {showForm && (
         <div style={{ ...S.card, marginBottom: 16 }}>
-          <div style={S.cardHeader}>New asset category</div>
+          <div style={S.cardHeader}>New Asset Category</div>
           <div style={S.formGrid}>
             <div><label style={S.label}>Name</label><input style={S.input} value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Computer Equipment" /></div>
             <div><label style={S.label}>Description</label><input style={S.input} value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} /></div>
             <div>
-              <label style={S.label}>Depreciation method</label>
+              <label style={S.label}>Depreciation Method</label>
               <select style={S.select} value={form.depreciationMethod} onChange={e => setForm(f => ({ ...f, depreciationMethod: e.target.value as DepMethod }))}>
                 <option value="STRAIGHT_LINE">Straight Line</option>
                 <option value="DECLINING_BALANCE">Declining Balance</option>
               </select>
             </div>
-            <div><label style={S.label}>Useful life (months)</label><input style={S.input} value={form.usefulLifeMonths} onChange={e => setForm(f => ({ ...f, usefulLifeMonths: e.target.value }))} placeholder="60" /></div>
-            <div><label style={S.label}>Annual depreciation rate (%)</label><input style={S.input} value={form.depreciationRatePercent} onChange={e => setForm(f => ({ ...f, depreciationRatePercent: e.target.value }))} placeholder="20" /></div>
+            <div><label style={S.label}>Useful Life (Months)</label><input style={S.input} value={form.usefulLifeMonths} onChange={e => setForm(f => ({ ...f, usefulLifeMonths: e.target.value }))} placeholder="60" /></div>
+            <div><label style={S.label}>Annual Depreciation Rate (%)</label><input style={S.input} value={form.depreciationRatePercent} onChange={e => setForm(f => ({ ...f, depreciationRatePercent: e.target.value }))} placeholder="20" /></div>
           </div>
           <div style={{ fontSize: 11, color: '#94a3b8', margin: '12px 0 4px', textTransform: 'uppercase', letterSpacing: 0.06 }}>GL accounts for postings</div>
           <div style={S.formGrid}>
             <div>
-              <label style={S.label}>Fixed asset (cost)</label>
+              <label style={S.label}>Fixed Asset (Cost)</label>
               <select style={S.select} value={form.assetAccountId} onChange={e => setForm(f => ({ ...f, assetAccountId: e.target.value }))}>
                 <option value="">Select ASSET account…</option>
                 {assetAccounts.map(a => <option key={a.id} value={a.id}>{a.code} — {a.name}</option>)}
               </select>
             </div>
             <div>
-              <label style={S.label}>Accumulated depreciation (contra-asset)</label>
+              <label style={S.label}>Accumulated Depreciation (Contra-asset)</label>
               <select style={S.select} value={form.accumDepAccountId} onChange={e => setForm(f => ({ ...f, accumDepAccountId: e.target.value }))}>
                 <option value="">Select ASSET account…</option>
                 {assetAccounts.map(a => <option key={a.id} value={a.id}>{a.code} — {a.name}</option>)}
               </select>
             </div>
             <div>
-              <label style={S.label}>Depreciation expense</label>
+              <label style={S.label}>Depreciation Expense</label>
               <select style={S.select} value={form.depExpenseAccountId} onChange={e => setForm(f => ({ ...f, depExpenseAccountId: e.target.value }))}>
                 <option value="">Select EXPENSE account…</option>
                 {expenseAccounts.map(a => <option key={a.id} value={a.id}>{a.code} — {a.name}</option>)}
@@ -4683,7 +4683,7 @@ function AssetCategories({ showToast, canWrite }: { showToast: (m: string, t?: '
 
       <div style={S.card}>
         <table style={S.table}>
-          <thead><tr>{['Category','Method','Life','Rate','Asset acct','Accum dep acct','Expense acct','# assets',''].map(h => <th key={h} style={S.th}>{h}</th>)}</tr></thead>
+          <thead><tr>{['Category','Method','Life','Rate','Asset Acct','Accum Dep Acct','Expense Acct','# Assets',''].map(h => <th key={h} style={S.th}>{h}</th>)}</tr></thead>
           <tbody>
             {categories.length === 0 && <tr><td colSpan={9} style={{ ...S.td, textAlign: 'center', color: '#94a3b8' }}>No categories yet — create one to start tracking assets</td></tr>}
             {categories.map(c => (
@@ -4793,9 +4793,9 @@ function AssetRegister({ showToast, canWrite }: { showToast: (m: string, t?: 'ok
       {/* KPI strip */}
       <div style={S.kpiGrid}>
         {[
-          { label: 'Total cost', value: `$${fmt(totals.cost)}`, color: '#475569' },
-          { label: 'Accumulated depreciation', value: `$${fmt(totals.accum)}`, color: '#d97706' },
-          { label: 'Net book value', value: `$${fmt(totals.book)}`, color: '#0891b2' },
+          { label: 'Total Cost', value: `$${fmt(totals.cost)}`, color: '#475569' },
+          { label: 'Accumulated Depreciation', value: `$${fmt(totals.accum)}`, color: '#d97706' },
+          { label: 'Net Book Value', value: `$${fmt(totals.book)}`, color: '#0891b2' },
           { label: '# of assets', value: String(filtered.length), color: '#0f172a' },
         ].map(k => <div key={k.label} style={S.kpiCard}><div style={{fontSize:11,color:'#94a3b8',marginBottom:4}}>{k.label}</div><div style={{fontSize:22,fontWeight:700,color:k.color}}>{k.value}</div></div>)}
       </div>
@@ -4819,7 +4819,7 @@ function AssetRegister({ showToast, canWrite }: { showToast: (m: string, t?: 'ok
 
       {showForm && (
         <div style={{ ...S.card, marginBottom: 16 }}>
-          <div style={S.cardHeader}>New fixed asset</div>
+          <div style={S.cardHeader}>New Fixed Asset</div>
           <div style={S.formGrid}>
             <div>
               <label style={S.label}>Category</label>
@@ -4830,9 +4830,9 @@ function AssetRegister({ showToast, canWrite }: { showToast: (m: string, t?: 'ok
             </div>
             <div><label style={S.label}>Asset #</label><input style={S.input} value={form.assetNo} onChange={e => setForm(f => ({ ...f, assetNo: e.target.value }))} placeholder="FA-001" /></div>
             <div style={{ gridColumn: '1 / -1' }}><label style={S.label}>Description</label><input style={S.input} value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} placeholder="MacBook Pro 16-inch" /></div>
-            <div><label style={S.label}>Acquisition date</label><input style={S.input} type="date" value={form.acquisitionDate} onChange={e => setForm(f => ({ ...f, acquisitionDate: e.target.value }))} /></div>
+            <div><label style={S.label}>Acquisition Date</label><input style={S.input} type="date" value={form.acquisitionDate} onChange={e => setForm(f => ({ ...f, acquisitionDate: e.target.value }))} /></div>
             <div><label style={S.label}>Cost</label><input style={S.input} value={form.cost} onChange={e => setForm(f => ({ ...f, cost: e.target.value }))} placeholder="3000.00" /></div>
-            <div><label style={S.label}>Salvage value</label><input style={S.input} value={form.salvageValue} onChange={e => setForm(f => ({ ...f, salvageValue: e.target.value }))} placeholder="0" /></div>
+            <div><label style={S.label}>Salvage Value</label><input style={S.input} value={form.salvageValue} onChange={e => setForm(f => ({ ...f, salvageValue: e.target.value }))} placeholder="0" /></div>
             <div>
               <label style={S.label}>Method</label>
               <select style={S.select} value={form.depreciationMethod} onChange={e => setForm(f => ({ ...f, depreciationMethod: e.target.value as DepMethod }))}>
@@ -4840,10 +4840,10 @@ function AssetRegister({ showToast, canWrite }: { showToast: (m: string, t?: 'ok
                 <option value="DECLINING_BALANCE">Declining Balance</option>
               </select>
             </div>
-            <div><label style={S.label}>Useful life (months)</label><input style={S.input} value={form.usefulLifeMonths} onChange={e => setForm(f => ({ ...f, usefulLifeMonths: e.target.value }))} placeholder="60" /></div>
-            <div><label style={S.label}>Annual rate (%)</label><input style={S.input} value={form.depreciationRatePercent} onChange={e => setForm(f => ({ ...f, depreciationRatePercent: e.target.value }))} placeholder="20" /></div>
+            <div><label style={S.label}>Useful Life (Months)</label><input style={S.input} value={form.usefulLifeMonths} onChange={e => setForm(f => ({ ...f, usefulLifeMonths: e.target.value }))} placeholder="60" /></div>
+            <div><label style={S.label}>Annual Rate (%)</label><input style={S.input} value={form.depreciationRatePercent} onChange={e => setForm(f => ({ ...f, depreciationRatePercent: e.target.value }))} placeholder="20" /></div>
             <div><label style={S.label}>Location</label><input style={S.input} value={form.location} onChange={e => setForm(f => ({ ...f, location: e.target.value }))} placeholder="Optional" /></div>
-            <div><label style={S.label}>Serial number</label><input style={S.input} value={form.serialNumber} onChange={e => setForm(f => ({ ...f, serialNumber: e.target.value }))} placeholder="Optional" /></div>
+            <div><label style={S.label}>Serial Number</label><input style={S.input} value={form.serialNumber} onChange={e => setForm(f => ({ ...f, serialNumber: e.target.value }))} placeholder="Optional" /></div>
           </div>
           <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
             <button style={{ ...S.btn, ...S.btnPrimary }} onClick={save}>Save</button>
@@ -4854,7 +4854,7 @@ function AssetRegister({ showToast, canWrite }: { showToast: (m: string, t?: 'ok
 
       <div style={S.card}>
         <table style={S.table}>
-          <thead><tr>{['Asset #','Description','Category','Acq date','Cost','Accum dep','Book value','Status'].map(h => <th key={h} style={S.th}>{h}</th>)}</tr></thead>
+          <thead><tr>{['Asset #','Description','Category','Acq Date','Cost','Accum Dep','Book Value','Status'].map(h => <th key={h} style={S.th}>{h}</th>)}</tr></thead>
           <tbody>
             {filtered.length === 0 && <tr><td colSpan={8} style={{ ...S.td, textAlign: 'center', color: '#94a3b8' }}>No assets {statusFilter !== 'all' ? `with status ${statusFilter}` : 'yet'}</td></tr>}
             {filtered.map(a => (
@@ -4880,7 +4880,7 @@ function AssetStatusBadge({ status }: { status: FixedAsset['status'] }) {
   const map = {
     ACTIVE:             { bg: '#f0fdf4', fg: '#166534', label: 'Active' },
     DISPOSED:           { bg: '#fef2f2', fg: '#991b1b', label: 'Disposed' },
-    FULLY_DEPRECIATED:  { bg: '#f1f5f9', fg: '#475569', label: 'Fully depreciated' },
+    FULLY_DEPRECIATED:  { bg: '#f1f5f9', fg: '#475569', label: 'Fully Depreciated' },
   }
   const t = map[status]
   return <span style={{ background: t.bg, color: t.fg, padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600 }}>{t.label}</span>
@@ -4943,10 +4943,10 @@ function AssetDetail({ asset: summary, onClose, showToast, canWrite }: {
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 16, padding: '4px 4px 14px' }}>
               {[
                 ['Category', a.category?.name ?? '—'],
-                ['Acquisition date', fmtDate(a.acquisitionDate)],
+                ['Acquisition Date', fmtDate(a.acquisitionDate)],
                 ['Cost', `$${fmt(Number(a.cost))}`],
-                ['Salvage value', `$${fmt(Number(a.salvageValue))}`],
-                ['Useful life', `${a.usefulLifeMonths} months`],
+                ['Salvage Value', `$${fmt(Number(a.salvageValue))}`],
+                ['Useful Life', `${a.usefulLifeMonths} months`],
                 ['Method', a.depreciationMethod === 'STRAIGHT_LINE' ? 'Straight Line' : 'Declining Balance'],
                 ['Rate', `${Number(a.depreciationRatePercent).toFixed(2)}%`],
                 ['Accum. depreciation', `$${fmt(detail!.accumulated)}`],
@@ -4967,9 +4967,9 @@ function AssetDetail({ asset: summary, onClose, showToast, canWrite }: {
           </div>
 
           <div style={{ ...S.card, marginTop: 16 }}>
-            <div style={S.cardHeader}>Depreciation schedule ({a.depreciationEntries.length} entries)</div>
+            <div style={S.cardHeader}>Depreciation Schedule ({a.depreciationEntries.length} Entries)</div>
             <table style={S.table}>
-              <thead><tr>{['Period','Depreciation','Accumulated','Book value','JE'].map(h => <th key={h} style={S.th}>{h}</th>)}</tr></thead>
+              <thead><tr>{['Period','Depreciation','Accumulated','Book Value','JE'].map(h => <th key={h} style={S.th}>{h}</th>)}</tr></thead>
               <tbody>
                 {a.depreciationEntries.length === 0 && <tr><td colSpan={5} style={{ ...S.td, textAlign: 'center', color: '#94a3b8' }}>No depreciation yet — run depreciation from the register</td></tr>}
                 {a.depreciationEntries.map((e, i) => {
@@ -4997,17 +4997,17 @@ function AssetDetail({ asset: summary, onClose, showToast, canWrite }: {
             Books the disposal JE: removes cost, removes accumulated depreciation, records any proceeds, and books the gain/loss as the balancing figure.
           </div>
           <div style={S.formGrid}>
-            <div><label style={S.label}>Disposal date</label><input style={S.input} type="date" value={dispForm.disposalDate} onChange={e => setDispForm(f => ({ ...f, disposalDate: e.target.value }))} /></div>
+            <div><label style={S.label}>Disposal Date</label><input style={S.input} type="date" value={dispForm.disposalDate} onChange={e => setDispForm(f => ({ ...f, disposalDate: e.target.value }))} /></div>
             <div><label style={S.label}>Proceeds</label><input style={S.input} value={dispForm.proceeds} onChange={e => setDispForm(f => ({ ...f, proceeds: e.target.value }))} placeholder="0.00" /></div>
             <div>
-              <label style={S.label}>Proceeds account</label>
+              <label style={S.label}>Proceeds Account</label>
               <select style={S.select} value={dispForm.proceedsAccountId} onChange={e => setDispForm(f => ({ ...f, proceedsAccountId: e.target.value }))}>
                 <option value="">— (no proceeds)</option>
                 {accounts.filter(x => x.type === 'ASSET').map(x => <option key={x.id} value={x.id}>{x.code} — {x.name}</option>)}
               </select>
             </div>
             <div>
-              <label style={S.label}>Gain / loss account</label>
+              <label style={S.label}>Gain / Loss Account</label>
               <select style={S.select} value={dispForm.gainLossAccountId} onChange={e => setDispForm(f => ({ ...f, gainLossAccountId: e.target.value }))}>
                 <option value="">Select…</option>
                 {accounts.filter(x => x.type === 'REVENUE' || x.type === 'EXPENSE').map(x => <option key={x.id} value={x.id}>{x.code} — {x.name} ({x.type})</option>)}
@@ -5055,7 +5055,7 @@ function DepreciationRunModal({ onClose, showToast }: { onClose: () => void; sho
 
   return (
     <ModalOverlay onClose={onClose}>
-      <div style={S.cardHeader}>Run depreciation</div>
+      <div style={S.cardHeader}>Run Depreciation</div>
       {!result && <>
         <div style={{ fontSize: 13, color: '#475569', marginBottom: 14, lineHeight: 1.6 }}>
           Calculates one month of depreciation for every <strong>ACTIVE</strong> asset acquired on or before the period-end date, and posts the JE:<br/>
@@ -5063,7 +5063,7 @@ function DepreciationRunModal({ onClose, showToast }: { onClose: () => void; sho
           Idempotent — running twice for the same period skips already-booked assets.
         </div>
         <div style={S.formGrid}>
-          <div><label style={S.label}>Period end</label><input style={S.input} type="date" value={periodEnd} onChange={e => setPeriodEnd(e.target.value)} /></div>
+          <div><label style={S.label}>Period End</label><input style={S.input} type="date" value={periodEnd} onChange={e => setPeriodEnd(e.target.value)} /></div>
           <div style={{ display: 'flex', alignItems: 'flex-end' }}>
             <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#475569' }}>
               <input type="checkbox" checked={catchUp} onChange={e => setCatchUp(e.target.checked)} />
@@ -5151,7 +5151,7 @@ function GroupPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => vo
       </div>
 
       <div style={S.card}>
-        <div style={S.cardHeader}>Corporate tree</div>
+        <div style={S.cardHeader}>Corporate Tree</div>
         {tree.length === 0 && <div style={{ padding: 30, textAlign: 'center', color: '#94a3b8' }}>No entities visible</div>}
         {tree.map(node => <TreeBranch key={node.id} node={node} depth={0} onEdit={canWrite ? setEditing : null} />)}
       </div>
@@ -5247,13 +5247,13 @@ function GroupEditModal({ entity, parentChoices, onClose, onSaved, showToast }: 
 
   return (
     <ModalOverlay onClose={onClose}>
-      <div style={S.cardHeader}>Group settings — {entity.name}</div>
+      <div style={S.cardHeader}>Group Settings — {entity.name}</div>
       <div style={{ fontSize: 13, color: '#475569', lineHeight: 1.5, marginBottom: 14 }}>
         Configure parent entity and ownership. Currency is set on entity creation and can't be changed here.
       </div>
       <div style={S.formGrid}>
         <div>
-          <label style={S.label}>Parent entity</label>
+          <label style={S.label}>Parent Entity</label>
           <select style={S.select} value={parentId} onChange={e => setParentId(e.target.value)}>
             <option value="">— (top-level / no parent)</option>
             {parentChoices.filter(p => p.id !== entity.id).map(p => (
@@ -5262,7 +5262,7 @@ function GroupEditModal({ entity, parentChoices, onClose, onSaved, showToast }: 
           </select>
         </div>
         <div>
-          <label style={S.label}>Entity type</label>
+          <label style={S.label}>Entity Type</label>
           <select style={S.select} value={entityType} onChange={e => setEntityType(e.target.value as GroupNode['entityType'])}>
             <option value="STANDALONE">Standalone</option>
             <option value="HOLDING">Holding company</option>
@@ -5275,7 +5275,7 @@ function GroupEditModal({ entity, parentChoices, onClose, onSaved, showToast }: 
           <input style={S.input} value={pct} onChange={e => setPct(e.target.value)} placeholder="100" />
         </div>
         <div>
-          <label style={S.label}>Acquisition date</label>
+          <label style={S.label}>Acquisition Date</label>
           <input style={S.input} type="date" value={acqDate} onChange={e => setAcqDate(e.target.value)} />
         </div>
       </div>
@@ -5388,16 +5388,16 @@ function FxRatesPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => 
 
       {showForm && (
         <div style={{ ...S.card, marginBottom: 16 }}>
-          <div style={S.cardHeader}>Add / override FX rate</div>
+          <div style={S.cardHeader}>Add / Override FX Rate</div>
           <div style={S.formGrid}>
             <div>
-              <label style={S.label}>From currency</label>
+              <label style={S.label}>From Currency</label>
               <select style={S.select} value={form.fromCurrency} onChange={e => setForm(f => ({ ...f, fromCurrency: e.target.value }))}>
                 {COMMON_CURRENCIES.map(c => <option key={c}>{c}</option>)}
               </select>
             </div>
             <div>
-              <label style={S.label}>To currency</label>
+              <label style={S.label}>To Currency</label>
               <select style={S.select} value={form.toCurrency} onChange={e => setForm(f => ({ ...f, toCurrency: e.target.value }))}>
                 {COMMON_CURRENCIES.map(c => <option key={c}>{c}</option>)}
               </select>
@@ -5407,7 +5407,7 @@ function FxRatesPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => 
               <input style={S.input} value={form.rate} onChange={e => setForm(f => ({ ...f, rate: e.target.value }))} placeholder="0.92000000" />
             </div>
             <div>
-              <label style={S.label}>Effective date</label>
+              <label style={S.label}>Effective Date</label>
               <input style={S.input} type="date" value={form.effectiveDate} onChange={e => setForm(f => ({ ...f, effectiveDate: e.target.value }))} />
             </div>
             <div>
@@ -5433,7 +5433,7 @@ function FxRatesPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => 
           <div><label style={S.label}>Amount</label><input style={{ ...S.input, maxWidth: 140 }} value={preview.amount} onChange={e => setPreview(p => ({ ...p, amount: e.target.value }))} /></div>
           <div><label style={S.label}>From</label><select style={S.select} value={preview.from} onChange={e => setPreview(p => ({ ...p, from: e.target.value }))}>{COMMON_CURRENCIES.map(c => <option key={c}>{c}</option>)}</select></div>
           <div><label style={S.label}>To</label><select style={S.select} value={preview.to} onChange={e => setPreview(p => ({ ...p, to: e.target.value }))}>{COMMON_CURRENCIES.map(c => <option key={c}>{c}</option>)}</select></div>
-          <div><label style={S.label}>As of</label><input style={S.input} type="date" value={preview.date} onChange={e => setPreview(p => ({ ...p, date: e.target.value }))} /></div>
+          <div><label style={S.label}>As Of</label><input style={S.input} type="date" value={preview.date} onChange={e => setPreview(p => ({ ...p, date: e.target.value }))} /></div>
           <button style={{ ...S.btn, ...S.btnPrimary }} onClick={runPreview}>Convert</button>
         </div>
         {previewResult && (
@@ -5445,7 +5445,7 @@ function FxRatesPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => 
 
       {/* Rate table */}
       <div style={S.card}>
-        <div style={S.cardHeader}>Rate history ({rates.length})</div>
+        <div style={S.cardHeader}>Rate History ({rates.length})</div>
         <table style={S.table}>
           <thead><tr>{['From','To','Rate','Effective','Source','Notes',''].map(h => <th key={h} style={S.th}>{h}</th>)}</tr></thead>
           <tbody>
@@ -5503,7 +5503,7 @@ function FetchLatestModal({ onClose, onFetched, showToast }: {
 
   return (
     <ModalOverlay onClose={onClose}>
-      <div style={S.cardHeader}>Fetch FX rates from frankfurter.app</div>
+      <div style={S.cardHeader}>Fetch FX Rates from Frankfurter.app</div>
       {!result && (
         <>
           <div style={{ fontSize: 13, color: '#475569', lineHeight: 1.6, marginBottom: 14 }}>
@@ -5513,7 +5513,7 @@ function FetchLatestModal({ onClose, onFetched, showToast }: {
           </div>
           <div style={S.formGrid}>
             <div>
-              <label style={S.label}>Base currency</label>
+              <label style={S.label}>Base Currency</label>
               <select style={S.select} value={base} onChange={e => setBase(e.target.value)}>
                 {COMMON_CURRENCIES.map(c => <option key={c}>{c}</option>)}
               </select>
@@ -5527,7 +5527,7 @@ function FetchLatestModal({ onClose, onFetched, showToast }: {
             </div>
             {date !== 'latest' && (
               <div>
-                <label style={S.label}>Effective date</label>
+                <label style={S.label}>Effective Date</label>
                 <input style={S.input} type="date" value={customDate} max={today} onChange={e => setCustomDate(e.target.value)} />
               </div>
             )}
@@ -5681,11 +5681,11 @@ function MisCodes({ showToast, canWrite }: { showToast: (m: string, t?: 'ok'|'er
 
       {showForm && (
         <div style={{ ...S.card, marginBottom: 16 }}>
-          <div style={S.cardHeader}>New MIS / Department code</div>
+          <div style={S.cardHeader}>New MIS / Department Code</div>
           <div style={S.formGrid}>
             <div><label style={S.label}>Code</label><input style={S.input} value={form.code} onChange={e => setForm(f => ({ ...f, code: e.target.value.toUpperCase() }))} placeholder="DEPT01" /></div>
             <div><label style={S.label}>Department</label><input style={S.input} value={form.department} onChange={e => setForm(f => ({ ...f, department: e.target.value }))} placeholder="Sales — North" /></div>
-            <div style={{ gridColumn: '1 / -1' }}><label style={S.label}>Description (optional)</label><input style={S.input} value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} /></div>
+            <div style={{ gridColumn: '1 / -1' }}><label style={S.label}>Description (Optional)</label><input style={S.input} value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} /></div>
           </div>
           <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
             <button style={{ ...S.btn, ...S.btnPrimary }} onClick={save}>Save</button>
@@ -5696,7 +5696,7 @@ function MisCodes({ showToast, canWrite }: { showToast: (m: string, t?: 'ok'|'er
 
       <div style={S.card}>
         <table style={S.table}>
-          <thead><tr>{['Code','Department','Description','# of postings','Status',''].map(h => <th key={h} style={S.th}>{h}</th>)}</tr></thead>
+          <thead><tr>{['Code','Department','Description','# of Postings','Status',''].map(h => <th key={h} style={S.th}>{h}</th>)}</tr></thead>
           <tbody>
             {codes.length === 0 && <tr><td colSpan={6} style={{ ...S.td, textAlign: 'center', color: '#94a3b8' }}>No MIS codes yet — add up to {softCap} departments to start tagging journal lines</td></tr>}
             {codes.map(c => (
@@ -5764,7 +5764,7 @@ function MisConfigPanel({ showToast, canEdit }: { showToast: (m: string, t?: 'ok
   return (
     <div>
       <div style={{ ...S.card, marginBottom: 16 }}>
-        <div style={S.cardHeader}>Master toggle</div>
+        <div style={S.cardHeader}>Master Toggle</div>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 0' }}>
           <div>
             <div style={{ fontWeight: 500, fontSize: 14 }}>Enable MIS coding on this entity</div>
@@ -5783,7 +5783,7 @@ function MisConfigPanel({ showToast, canEdit }: { showToast: (m: string, t?: 'ok
       </div>
 
       <div style={{ ...S.card, marginBottom: 16, opacity: config.enabled ? 1 : 0.5, pointerEvents: config.enabled && canEdit ? 'auto' : 'none' }}>
-        <div style={S.cardHeader}>Require MIS code on these account types</div>
+        <div style={S.cardHeader}>Require MIS Code on These Account Types</div>
         <div style={{ fontSize: 12, color: '#64748b', marginBottom: 12, lineHeight: 1.5 }}>
           When the lines being posted touch any of these account types, the user must pick an MIS code on each such line. Lines for other types remain optional.
         </div>
@@ -5810,7 +5810,7 @@ function MisConfigPanel({ showToast, canEdit }: { showToast: (m: string, t?: 'ok
       </div>
 
       <div style={{ ...S.card, opacity: config.enabled ? 1 : 0.5, pointerEvents: config.enabled && canEdit ? 'auto' : 'none' }}>
-        <div style={S.cardHeader}>Override behavior</div>
+        <div style={S.cardHeader}>Override Behavior</div>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 0' }}>
           <div>
             <div style={{ fontWeight: 500, fontSize: 14 }}>Allow override (downgrade required → optional)</div>
@@ -5914,7 +5914,7 @@ function VendorReconPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err')
 
       {showForm && (
         <div style={{ ...S.card, marginBottom: 16 }}>
-          <div style={S.cardHeader}>New vendor reconciliation</div>
+          <div style={S.cardHeader}>New Vendor Reconciliation</div>
           {vendors.length === 0 && (
             <div style={{ padding: 12, background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 6, fontSize: 13, color: '#92400e', marginBottom: 12 }}>
               No vendors found in your AP module. Create at least one vendor invoice first, then come back.
@@ -5929,11 +5929,11 @@ function VendorReconPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err')
               </select>
             </div>
             <div>
-              <label style={S.label}>Statement date</label>
+              <label style={S.label}>Statement Date</label>
               <input style={S.input} type="date" value={form.statementDate} onChange={e => setForm(f => ({...f, statementDate: e.target.value}))} />
             </div>
             <div>
-              <label style={S.label}>Vendor's statement balance</label>
+              <label style={S.label}>Vendor's Statement Balance</label>
               <input style={S.input} value={form.statementBalance} onChange={e => setForm(f => ({...f, statementBalance: e.target.value}))} placeholder="0.00" />
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
@@ -5960,7 +5960,7 @@ function VendorReconPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err')
 
       <div style={S.card}>
         <table style={S.table}>
-          <thead><tr>{['Vendor','Statement date','Statement bal.','Internal bal.','Difference','Status','Created'].map(h => <th key={h} style={S.th}>{h}</th>)}</tr></thead>
+          <thead><tr>{['Vendor','Statement Date','Statement Bal.','Internal Bal.','Difference','Status','Created'].map(h => <th key={h} style={S.th}>{h}</th>)}</tr></thead>
           <tbody>
             {recons.length === 0 && <tr><td colSpan={7} style={{ ...S.td, textAlign: 'center', color: '#94a3b8' }}>No vendor reconciliations yet</td></tr>}
             {recons.map(r => {
@@ -6176,8 +6176,8 @@ const STATUS_COLORS: Record<ApRequestStatusUI, { bg: string; fg: string; label: 
   SUBMITTED:              { bg: '#dbeafe', fg: '#1d4ed8', label: 'Submitted' },
   APPROVED:               { bg: '#ddd6fe', fg: '#6d28d9', label: 'Approved' },
   POSTED:                 { bg: '#dcfce7', fg: '#166534', label: 'Posted' },
-  RETURNED_TO_REQUESTER:  { bg: '#fef3c7', fg: '#92400e', label: 'Returned to requester' },
-  RETURNED_TO_APPROVER:   { bg: '#fed7aa', fg: '#9a3412', label: 'Returned to approver' },
+  RETURNED_TO_REQUESTER:  { bg: '#fef3c7', fg: '#92400e', label: 'Returned to Requester' },
+  RETURNED_TO_APPROVER:   { bg: '#fed7aa', fg: '#9a3412', label: 'Returned to Approver' },
 }
 
 function ApRequestsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => void }) {
@@ -6387,7 +6387,7 @@ function ApRequestForm({ onClose, onCreated, showToast }: {
 
   return (
     <div style={{ ...S.card, marginBottom: 16 }}>
-      <div style={S.cardHeader}>New expense request</div>
+      <div style={S.cardHeader}>New Expense Request</div>
       <div style={S.formGrid}>
         <div>
           <label style={S.label}>Vendor</label>
@@ -6405,11 +6405,11 @@ function ApRequestForm({ onClose, onCreated, showToast }: {
           <input style={S.input} value={form.invoiceNo} onChange={e => setForm(f => ({ ...f, invoiceNo: e.target.value }))} placeholder="INV-1234" />
         </div>
         <div>
-          <label style={S.label}>Invoice date</label>
+          <label style={S.label}>Invoice Date</label>
           <input style={S.input} type="date" value={form.invoiceDate} onChange={e => setForm(f => ({ ...f, invoiceDate: e.target.value }))} />
         </div>
         <div>
-          <label style={S.label}>Due date (optional)</label>
+          <label style={S.label}>Due Date (Optional)</label>
           <input style={S.input} type="date" value={form.dueDate} onChange={e => setForm(f => ({ ...f, dueDate: e.target.value }))} />
         </div>
         <div>
@@ -6417,14 +6417,14 @@ function ApRequestForm({ onClose, onCreated, showToast }: {
           <input style={S.input} value={form.amount} onChange={e => setForm(f => ({ ...f, amount: e.target.value }))} placeholder="0.00" />
         </div>
         <div>
-          <label style={S.label}>GL account (expense)</label>
+          <label style={S.label}>GL Account (Expense)</label>
           <select style={S.select} value={form.accountId} onChange={e => setForm(f => ({ ...f, accountId: e.target.value }))}>
             <option value="">Select expense account…</option>
             {accounts.map(a => <option key={a.id} value={a.id}>{a.code} — {a.name}</option>)}
           </select>
         </div>
         <div>
-          <label style={S.label}>Payment mode</label>
+          <label style={S.label}>Payment Mode</label>
           <select style={S.select} value={form.paymentMode} onChange={e => setForm(f => ({ ...f, paymentMode: e.target.value as ApPaymentModeUI }))}>
             <option value="ACH">ACH</option>
             <option value="CHEQUE">Cheque</option>
@@ -6433,7 +6433,7 @@ function ApRequestForm({ onClose, onCreated, showToast }: {
           </select>
         </div>
         <div>
-          <label style={S.label}>Invoice attachment (PDF / image)</label>
+          <label style={S.label}>Invoice Attachment (PDF / Image)</label>
           {attachment ? (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 8px', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 6 }}>
               <span style={{ fontSize: 12 }}>✓ {attachment.filename} ({fmtCompactBytes(attachment.size)})</span>
@@ -6625,17 +6625,17 @@ function ApRequestDetailView({ id, onClose, showToast }: {
           <div style={S.formGrid}>
             <div><label style={S.label}>Vendor</label><input style={S.input} value={editForm.vendor} onChange={e => setEditForm(f => f ? ({ ...f, vendor: e.target.value }) : f)} /></div>
             <div><label style={S.label}>Invoice #</label><input style={S.input} value={editForm.invoiceNo} onChange={e => setEditForm(f => f ? ({ ...f, invoiceNo: e.target.value }) : f)} /></div>
-            <div><label style={S.label}>Invoice date</label><input style={S.input} type="date" value={editForm.invoiceDate} onChange={e => setEditForm(f => f ? ({ ...f, invoiceDate: e.target.value }) : f)} /></div>
-            <div><label style={S.label}>Due date</label><input style={S.input} type="date" value={editForm.dueDate} onChange={e => setEditForm(f => f ? ({ ...f, dueDate: e.target.value }) : f)} /></div>
+            <div><label style={S.label}>Invoice Date</label><input style={S.input} type="date" value={editForm.invoiceDate} onChange={e => setEditForm(f => f ? ({ ...f, invoiceDate: e.target.value }) : f)} /></div>
+            <div><label style={S.label}>Due Date</label><input style={S.input} type="date" value={editForm.dueDate} onChange={e => setEditForm(f => f ? ({ ...f, dueDate: e.target.value }) : f)} /></div>
             <div><label style={S.label}>Amount</label><input style={S.input} value={editForm.amount} onChange={e => setEditForm(f => f ? ({ ...f, amount: e.target.value }) : f)} /></div>
             <div>
-              <label style={S.label}>GL account</label>
+              <label style={S.label}>GL Account</label>
               <select style={S.select} value={editForm.accountId} onChange={e => setEditForm(f => f ? ({ ...f, accountId: e.target.value }) : f)}>
                 {accounts.map(a => <option key={a.id} value={a.id}>{a.code} — {a.name}</option>)}
               </select>
             </div>
             <div>
-              <label style={S.label}>Payment mode</label>
+              <label style={S.label}>Payment Mode</label>
               <select style={S.select} value={editForm.paymentMode} onChange={e => setEditForm(f => f ? ({ ...f, paymentMode: e.target.value as ApPaymentModeUI }) : f)}>
                 <option value="ACH">ACH</option><option value="CHEQUE">Cheque</option><option value="WIRE">Wire</option><option value="OTHER">Other</option>
               </select>
@@ -6687,7 +6687,7 @@ function ApRequestDetailView({ id, onClose, showToast }: {
       {/* Comment input for workflow actions */}
       {data.allowedActions.length > 0 && (
         <div style={{ ...S.card, marginBottom: 16 }}>
-          <div style={S.cardHeader}>Add a comment with your action</div>
+          <div style={S.cardHeader}>Add a Comment with Your Action</div>
           <textarea
             style={{ width: '100%', minHeight: 60, padding: 8, border: '1px solid #e2e8f0', borderRadius: 6, fontFamily: 'inherit', fontSize: 13 }}
             placeholder="Optional for approve/post. Required for 'send back' actions."
@@ -6957,14 +6957,14 @@ function StTemplateBuilder({ mode, templateId, onClose, onSaved, showToast }: {
       </div>
 
       <div style={{ ...S.card, marginBottom: 16 }}>
-        <div style={S.cardHeader}>Template details</div>
+        <div style={S.cardHeader}>Template Details</div>
         <div style={S.formGrid}>
           <div>
             <label style={S.label}>Name</label>
             <input style={S.input} value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Management P&L" />
           </div>
           <div>
-            <label style={S.label}>Description (optional)</label>
+            <label style={S.label}>Description (Optional)</label>
             <input style={S.input} value={description} onChange={e => setDescription(e.target.value)} placeholder="What is this report for?" />
           </div>
         </div>
@@ -7380,9 +7380,9 @@ function ReceiptsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') =>
     <div>
       <div style={S.kpiGrid}>
         {[
-          { label: 'Total received (posted)', value: `$${fmt(summary.total)}`, color: '#16a34a' },
-          { label: 'Posted receipts', value: summary.countPosted, color: '#0891b2' },
-          { label: 'Voided receipts', value: summary.countVoid, color: '#94a3b8' },
+          { label: 'Total Received (Posted)', value: `$${fmt(summary.total)}`, color: '#16a34a' },
+          { label: 'Posted Receipts', value: summary.countPosted, color: '#0891b2' },
+          { label: 'Voided Receipts', value: summary.countVoid, color: '#94a3b8' },
         ].map(k => (
           <div key={k.label} style={S.kpiCard}>
             <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 4 }}>{k.label}</div>
@@ -7402,7 +7402,7 @@ function ReceiptsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') =>
 
       {showForm && (
         <div style={{ ...S.card, marginBottom: 16 }}>
-          <div style={S.cardHeader}>Record a receipt</div>
+          <div style={S.cardHeader}>Record a Receipt</div>
 
           {bankAccounts.length === 0 && (
             <div style={{ padding: 10, background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, fontSize: 12, color: '#991b1b', marginBottom: 12 }}>
@@ -7417,11 +7417,11 @@ function ReceiptsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') =>
 
           <div style={S.formGrid}>
             <div>
-              <label style={S.label}>Received from</label>
+              <label style={S.label}>Received From</label>
               <input style={S.input} value={form.receivedFrom} onChange={e => setForm(f => ({ ...f, receivedFrom: e.target.value }))} placeholder="Customer / payer name" />
             </div>
             <div>
-              <label style={S.label}>Receipt date</label>
+              <label style={S.label}>Receipt Date</label>
               <input style={S.input} type="date" value={form.receiptDate} onChange={e => setForm(f => ({ ...f, receiptDate: e.target.value }))} />
             </div>
             <div>
@@ -7429,28 +7429,28 @@ function ReceiptsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') =>
               <input style={S.input} value={form.amount} onChange={e => setForm(f => ({ ...f, amount: e.target.value }))} placeholder="0.00" />
             </div>
             <div>
-              <label style={S.label}>Payment mode</label>
+              <label style={S.label}>Payment Mode</label>
               <select style={S.select} value={form.paymentModeId} onChange={e => setForm(f => ({ ...f, paymentModeId: e.target.value }))}>
                 <option value="">— select —</option>
                 {modes.filter(m => m.isActive).map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
               </select>
             </div>
             <div>
-              <label style={S.label}>Deposit account (DR)</label>
+              <label style={S.label}>Deposit Account (DR)</label>
               <select style={S.select} value={form.depositAccountId} onChange={e => setForm(f => ({ ...f, depositAccountId: e.target.value }))}>
                 <option value="">— select bank/cash —</option>
                 {bankAccounts.map(a => <option key={a.id} value={a.id}>{a.code} — {a.name}</option>)}
               </select>
             </div>
             <div>
-              <label style={S.label}>Credit account (CR)</label>
+              <label style={S.label}>Credit Account (CR)</label>
               <select style={S.select} value={form.creditAccountId} onChange={e => setForm(f => ({ ...f, creditAccountId: e.target.value }))}>
                 <option value="">— select revenue / AR —</option>
                 {creditAccounts.map(a => <option key={a.id} value={a.id}>{a.code} — {a.name} ({a.type})</option>)}
               </select>
             </div>
             <div style={{ gridColumn: '1 / -1' }}>
-              <label style={S.label}>Reference (cheque #, txn id, etc.)</label>
+              <label style={S.label}>Reference (Cheque #, Txn ID, Etc.)</label>
               <input style={S.input} value={form.reference} onChange={e => setForm(f => ({ ...f, reference: e.target.value }))} placeholder="optional" />
             </div>
             <div style={{ gridColumn: '1 / -1' }}>
@@ -7474,7 +7474,7 @@ function ReceiptsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') =>
 
       <div style={S.card}>
         <table style={S.table}>
-          <thead><tr>{['Receipt #','Date','Received from','Amount','Mode','Deposit','Credit','JE','Status',''].map(h => <th key={h} style={S.th}>{h}</th>)}</tr></thead>
+          <thead><tr>{['Receipt #','Date','Received From','Amount','Mode','Deposit','Credit','JE','Status',''].map(h => <th key={h} style={S.th}>{h}</th>)}</tr></thead>
           <tbody>
             {receipts.length === 0 && <tr><td colSpan={10} style={{ ...S.td, textAlign: 'center', color: '#94a3b8' }}>No receipts yet</td></tr>}
             {receipts.map(r => (
@@ -7561,18 +7561,18 @@ function PaymentModesPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err'
 
       {showForm && (
         <div style={{ ...S.card, marginBottom: 16 }}>
-          <div style={S.cardHeader}>New payment mode</div>
+          <div style={S.cardHeader}>New Payment Mode</div>
           <div style={S.formGrid}>
             <div>
               <label style={S.label}>Name</label>
               <input style={S.input} value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. PayPal" />
             </div>
             <div>
-              <label style={S.label}>Code (uppercase)</label>
+              <label style={S.label}>Code (Uppercase)</label>
               <input style={S.input} value={form.code} onChange={e => setForm(f => ({ ...f, code: e.target.value.toUpperCase() }))} placeholder="PAYPAL" />
             </div>
             <div>
-              <label style={S.label}>Used for</label>
+              <label style={S.label}>Used For</label>
               <select style={S.select} value={form.kind} onChange={e => setForm(f => ({ ...f, kind: e.target.value as typeof f.kind }))}>
                 <option value="BOTH">Both — payments and receipts</option>
                 <option value="PAYMENT">Payments only (outgoing)</option>
@@ -7589,7 +7589,7 @@ function PaymentModesPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err'
 
       <div style={S.card}>
         <table style={S.table}>
-          <thead><tr>{['Name','Code','Used for','Active','Sort',''].map(h => <th key={h} style={S.th}>{h}</th>)}</tr></thead>
+          <thead><tr>{['Name','Code','Used For','Active','Sort',''].map(h => <th key={h} style={S.th}>{h}</th>)}</tr></thead>
           <tbody>
             {modes.length === 0 && <tr><td colSpan={6} style={{ ...S.td, textAlign: 'center', color: '#94a3b8' }}>Loading modes…</td></tr>}
             {modes.map(m => (
