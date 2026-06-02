@@ -41,6 +41,7 @@ const MODULE_ACCESS: Record<string, string[]> = {
   recon:      ['OWNER','ADMIN','ACCOUNTANT','AUDITOR'],
   'vendor-recon': ['OWNER','ADMIN','ACCOUNTANT','AUDITOR','AP_CLERK'],
   reports:    ['OWNER','ADMIN','ACCOUNTANT','AUDITOR','CLIENT_VIEW'],
+  'statement-templates': ['OWNER','ADMIN','ACCOUNTANT','AUDITOR'],
   assets:     ['OWNER','ADMIN','ACCOUNTANT','AUDITOR'],
   audit:      ['OWNER','ADMIN','AUDITOR'],
   group:      ['OWNER','ADMIN'],
@@ -99,6 +100,7 @@ export default function LedgerProApp() {
     { id: 'vendor-recon', label: 'Vendor Recon',    icon: '◐' },
     { id: 'assets',    label: 'Fixed Assets',       icon: '⬚' },
     { id: 'reports',   label: 'Reports',            icon: '▤' },
+    { id: 'statement-templates', label: 'Custom Statements', icon: '📊' },
     { id: 'audit',     label: 'Audit Trail',        icon: '⊙' },
     { id: 'group',     label: 'Group Structure',    icon: '◇' },
     { id: 'fx',        label: 'FX Rates',           icon: '⇄' },
@@ -221,6 +223,7 @@ export default function LedgerProApp() {
                 {page === 'vendor-recon' && <VendorReconPage showToast={showToast} />}
                 {page === 'assets'    && <AssetsPage     showToast={showToast} />}
                 {page === 'reports'   && <ReportsPage    showToast={showToast} />}
+                {page === 'statement-templates' && <StatementTemplatesPage showToast={showToast} />}
                 {page === 'audit'     && <AuditPage      showToast={showToast} />}
                 {page === 'group'     && <GroupPage      showToast={showToast} />}
                 {page === 'fx'        && <FxRatesPage    showToast={showToast} />}
@@ -6237,6 +6240,542 @@ function Field({ label, value, mono }: { label: string; value: string; mono?: bo
     <div>
       <div style={{ fontSize: 10, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.06, marginBottom: 4 }}>{label}</div>
       <div style={{ fontSize: 14, fontWeight: 500, ...(mono ? { fontFamily: 'monospace' } : {}) }}>{value}</div>
+    </div>
+  )
+}
+
+// ─── Custom Statement Templates ──────────────────────────────────────────────
+type StLineType = 'HEADER'|'ACCOUNT'|'GROUP'|'SUBTOTAL'|'SPACER'
+interface StLine {
+  id: string
+  type: StLineType
+  label: string
+  accountId?: string
+  accountIds?: string[]
+  invert?: boolean
+  bold?: boolean
+}
+interface StTemplateListItem {
+  id: string
+  name: string
+  description: string | null
+  lineCount: number
+  createdAt: string
+  updatedAt: string
+}
+interface StTemplate {
+  id: string
+  name: string
+  description: string | null
+  lines: StLine[]
+  createdAt: string
+  updatedAt: string
+}
+interface RunResult {
+  template: { id: string; name: string; description: string | null }
+  rows: Array<{ type: StLineType; label: string; value: number | null; bold: boolean; accountIds: string[] }>
+  grandTotal: number
+  range: { from?: string; to?: string }
+}
+
+function StatementTemplatesPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => void }) {
+  const { currentEntity, role } = useApp()
+  const [view, setView] = useState<'list'|'edit'|'new'|'run'>('list')
+  const [templates, setTemplates] = useState<StTemplateListItem[]>([])
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const canWrite = ['OWNER','ADMIN','ACCOUNTANT'].includes(role)
+
+  const load = useCallback(() => {
+    if (!currentEntity) return
+    fetch(`/api/statement-templates?entityId=${currentEntity.id}`)
+      .then(r => r.json())
+      .then(d => setTemplates(d.templates ?? []))
+  }, [currentEntity])
+  useEffect(() => { load() }, [load])
+
+  if (view === 'new') {
+    return <StTemplateBuilder
+      mode="new"
+      onClose={() => setView('list')}
+      onSaved={() => { setView('list'); load() }}
+      showToast={showToast}
+    />
+  }
+  if (view === 'edit' && selectedId) {
+    return <StTemplateBuilder
+      mode="edit"
+      templateId={selectedId}
+      onClose={() => { setView('list'); setSelectedId(null) }}
+      onSaved={() => { setView('list'); setSelectedId(null); load() }}
+      showToast={showToast}
+    />
+  }
+  if (view === 'run' && selectedId) {
+    return <StTemplateRunner
+      templateId={selectedId}
+      onClose={() => { setView('list'); setSelectedId(null) }}
+      showToast={showToast}
+    />
+  }
+
+  return (
+    <div>
+      <div style={S.pageActions}>
+        <div style={{ fontSize: 13, color: '#475569', lineHeight: 1.5, maxWidth: 720 }}>
+          Build custom financial statement layouts — pick your sections, choose which accounts roll into each row, add subtotals.
+          Run any template across any date range. Useful for board reports, management cuts, KPI summaries that don't fit the standard P&L / BS shape.
+        </div>
+        {canWrite && <button style={{ ...S.btn, ...S.btnPrimary }} onClick={() => setView('new')}>+ New template</button>}
+      </div>
+
+      <div style={S.card}>
+        <table style={S.table}>
+          <thead><tr>{['Name','Description','Lines','Updated',''].map(h => <th key={h} style={S.th}>{h}</th>)}</tr></thead>
+          <tbody>
+            {templates.length === 0 && <tr><td colSpan={5} style={{ ...S.td, textAlign: 'center', color: '#94a3b8' }}>
+              No templates yet — click "+ New template" to build your first
+            </td></tr>}
+            {templates.map(t => (
+              <tr key={t.id}>
+                <td style={{ ...S.td, fontWeight: 600 }}>{t.name}</td>
+                <td style={{ ...S.td, fontSize: 12, color: '#64748b' }}>{t.description ?? '—'}</td>
+                <td style={{ ...S.td, textAlign: 'right', fontSize: 12, color: '#64748b' }}>{t.lineCount}</td>
+                <td style={{ ...S.td, fontSize: 12, color: '#64748b' }}>{fmtDate(t.updatedAt)}</td>
+                <td style={{ ...S.td, textAlign: 'right' }}>
+                  <button style={S.textBtn} onClick={() => { setSelectedId(t.id); setView('run') }}>Run</button>
+                  {canWrite && <>
+                    <span style={{ color: '#cbd5e1', margin: '0 8px' }}>·</span>
+                    <button style={S.textBtn} onClick={() => { setSelectedId(t.id); setView('edit') }}>Edit</button>
+                  </>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+// ─── Builder ─────────────────────────────────────────────────────────────────
+function StTemplateBuilder({ mode, templateId, onClose, onSaved, showToast }: {
+  mode: 'new' | 'edit'
+  templateId?: string
+  onClose: () => void
+  onSaved: () => void
+  showToast: (m: string, t?: 'ok'|'err') => void
+}) {
+  const { currentEntity } = useApp()
+  const [name, setName] = useState('')
+  const [description, setDescription] = useState('')
+  const [lines, setLines] = useState<StLine[]>([])
+  const [accounts, setAccounts] = useState<Account[]>([])
+  const [saving, setSaving] = useState(false)
+
+  const newLineId = () => 'l_' + Math.random().toString(36).slice(2, 10)
+
+  useEffect(() => {
+    if (!currentEntity) return
+    fetch(`/api/accounts?entityId=${currentEntity.id}`).then(r => r.json()).then(setAccounts)
+    if (mode === 'edit' && templateId) {
+      fetch(`/api/statement-templates?entityId=${currentEntity.id}&id=${templateId}`)
+        .then(r => r.json())
+        .then((t: StTemplate) => {
+          setName(t.name)
+          setDescription(t.description ?? '')
+          setLines(t.lines)
+        })
+    } else {
+      // Seed with a starter template — header + revenue + subtotal scaffolding
+      setLines([
+        { id: newLineId(), type: 'HEADER',   label: 'Income' },
+        { id: newLineId(), type: 'SUBTOTAL', label: 'Total income' },
+        { id: newLineId(), type: 'SPACER',   label: '' },
+        { id: newLineId(), type: 'HEADER',   label: 'Expenses' },
+        { id: newLineId(), type: 'SUBTOTAL', label: 'Total expenses' },
+      ])
+    }
+  }, [currentEntity, mode, templateId])
+
+  const addLine = (type: StLineType) => {
+    const base: StLine = { id: newLineId(), type, label: type === 'SPACER' ? '' : '' }
+    if (type === 'ACCOUNT') base.label = 'Account'
+    if (type === 'GROUP') { base.label = 'Group'; base.accountIds = [] }
+    if (type === 'HEADER') base.label = 'Section header'
+    if (type === 'SUBTOTAL') base.label = 'Subtotal'
+    setLines(ls => [...ls, base])
+  }
+  const removeLine = (id: string) => setLines(ls => ls.filter(l => l.id !== id))
+  const moveLine = (id: string, dir: -1 | 1) => {
+    setLines(ls => {
+      const idx = ls.findIndex(l => l.id === id)
+      if (idx < 0) return ls
+      const next = idx + dir
+      if (next < 0 || next >= ls.length) return ls
+      const copy = ls.slice()
+      ;[copy[idx], copy[next]] = [copy[next], copy[idx]]
+      return copy
+    })
+  }
+  const updateLine = (id: string, patch: Partial<StLine>) => {
+    setLines(ls => ls.map(l => l.id === id ? { ...l, ...patch } : l))
+  }
+
+  const save = async () => {
+    if (!currentEntity) return
+    if (!name.trim()) return showToast('Template name is required', 'err')
+    if (lines.length === 0) return showToast('At least one line is required', 'err')
+
+    // Front-end validation mirrors the server
+    for (let i = 0; i < lines.length; i++) {
+      const l = lines[i]
+      if (l.type === 'ACCOUNT' && !l.accountId) return showToast(`Line ${i + 1}: pick an account`, 'err')
+      if (l.type === 'GROUP' && (!l.accountIds || l.accountIds.length === 0)) return showToast(`Line ${i + 1}: pick at least one account`, 'err')
+      if (l.type !== 'SPACER' && !l.label.trim()) return showToast(`Line ${i + 1}: label is required`, 'err')
+    }
+
+    setSaving(true)
+    try {
+      const url = '/api/statement-templates'
+      const method = mode === 'new' ? 'POST' : 'PATCH'
+      const body = mode === 'new'
+        ? { entityId: currentEntity.id, name, description: description || undefined, lines }
+        : { entityId: currentEntity.id, id: templateId, name, description: description || null, lines }
+      const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      const d = await res.json()
+      if (res.ok) { showToast(mode === 'new' ? 'Template created' : 'Template saved'); onSaved() }
+      else showToast(d.error ?? 'Save failed', 'err')
+    } finally { setSaving(false) }
+  }
+
+  const del = async () => {
+    if (!currentEntity || mode !== 'edit' || !templateId) return
+    if (!confirm(`Delete template "${name}"? This cannot be undone.`)) return
+    const res = await fetch(`/api/statement-templates?entityId=${currentEntity.id}&id=${templateId}`, { method: 'DELETE' })
+    if (res.ok) { showToast('Deleted'); onSaved() }
+    else { const d = await res.json(); showToast(d.error ?? 'Delete failed', 'err') }
+  }
+
+  return (
+    <div>
+      <div style={S.pageActions}>
+        <button style={S.btn} onClick={onClose}>← Back to list</button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          {mode === 'edit' && <button style={{ ...S.btn, color: '#dc2626', borderColor: '#fecaca' }} onClick={del}>Delete</button>}
+          <button style={{ ...S.btn, ...S.btnPrimary }} onClick={save} disabled={saving}>
+            {saving ? 'Saving…' : (mode === 'new' ? 'Save template' : 'Save changes')}
+          </button>
+        </div>
+      </div>
+
+      <div style={{ ...S.card, marginBottom: 16 }}>
+        <div style={S.cardHeader}>Template details</div>
+        <div style={S.formGrid}>
+          <div>
+            <label style={S.label}>Name</label>
+            <input style={S.input} value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Management P&L" />
+          </div>
+          <div>
+            <label style={S.label}>Description (optional)</label>
+            <input style={S.input} value={description} onChange={e => setDescription(e.target.value)} placeholder="What is this report for?" />
+          </div>
+        </div>
+      </div>
+
+      <div style={{ ...S.card }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+          <div style={S.cardHeader}>Lines ({lines.length})</div>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            <button style={{ ...S.btn, fontSize: 11, padding: '4px 8px' }} onClick={() => addLine('HEADER')}>+ Header</button>
+            <button style={{ ...S.btn, fontSize: 11, padding: '4px 8px' }} onClick={() => addLine('ACCOUNT')}>+ Account</button>
+            <button style={{ ...S.btn, fontSize: 11, padding: '4px 8px' }} onClick={() => addLine('GROUP')}>+ Group</button>
+            <button style={{ ...S.btn, fontSize: 11, padding: '4px 8px' }} onClick={() => addLine('SUBTOTAL')}>+ Subtotal</button>
+            <button style={{ ...S.btn, fontSize: 11, padding: '4px 8px' }} onClick={() => addLine('SPACER')}>+ Spacer</button>
+          </div>
+        </div>
+
+        {lines.length === 0 && <div style={{ padding: 30, textAlign: 'center', color: '#94a3b8', fontSize: 13 }}>
+          Add lines above to start building the layout
+        </div>}
+
+        {lines.map((line, i) => (
+          <StLineEditor
+            key={line.id}
+            line={line}
+            index={i}
+            isFirst={i === 0}
+            isLast={i === lines.length - 1}
+            accounts={accounts}
+            onChange={patch => updateLine(line.id, patch)}
+            onMove={(dir) => moveLine(line.id, dir)}
+            onDelete={() => removeLine(line.id)}
+          />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ─── Per-line editor ─────────────────────────────────────────────────────────
+function StLineEditor({ line, index, isFirst, isLast, accounts, onChange, onMove, onDelete }: {
+  line: StLine
+  index: number
+  isFirst: boolean
+  isLast: boolean
+  accounts: Account[]
+  onChange: (patch: Partial<StLine>) => void
+  onMove: (dir: -1 | 1) => void
+  onDelete: () => void
+}) {
+  const typeBadgeColor: Record<StLineType, { bg: string; fg: string }> = {
+    HEADER:   { bg: '#dbeafe', fg: '#1d4ed8' },
+    ACCOUNT:  { bg: '#f1f5f9', fg: '#334155' },
+    GROUP:    { bg: '#fef3c7', fg: '#92400e' },
+    SUBTOTAL: { bg: '#dcfce7', fg: '#166534' },
+    SPACER:   { bg: '#e2e8f0', fg: '#64748b' },
+  }
+  const badge = typeBadgeColor[line.type]
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '8px 0', borderBottom: '1px solid #f1f5f9' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 2, paddingTop: 2 }}>
+        <button style={{ ...S.btn, padding: '0 6px', fontSize: 10, minWidth: 20, opacity: isFirst ? 0.3 : 1 }} disabled={isFirst} onClick={() => onMove(-1)}>▲</button>
+        <button style={{ ...S.btn, padding: '0 6px', fontSize: 10, minWidth: 20, opacity: isLast ? 0.3 : 1 }} disabled={isLast} onClick={() => onMove(1)}>▼</button>
+      </div>
+      <div style={{ flex: '0 0 auto', minWidth: 32, fontSize: 11, color: '#94a3b8', fontFamily: 'monospace', paddingTop: 8, textAlign: 'right' }}>
+        {String(index + 1).padStart(2, '0')}
+      </div>
+      <div style={{ flex: '0 0 auto', paddingTop: 6 }}>
+        <span style={{ background: badge.bg, color: badge.fg, padding: '3px 8px', borderRadius: 4, fontSize: 10, fontWeight: 700, letterSpacing: 0.05 }}>
+          {line.type}
+        </span>
+      </div>
+      <div style={{ flex: 1, display: 'grid', gridTemplateColumns: line.type === 'SPACER' ? '1fr' : '1fr 1fr', gap: 8 }}>
+        {line.type !== 'SPACER' && (
+          <input
+            style={{ ...S.input, marginBottom: 0, fontWeight: line.type === 'HEADER' || line.type === 'SUBTOTAL' ? 600 : 400 }}
+            placeholder={line.type === 'HEADER' ? 'Section title' : 'Label'}
+            value={line.label}
+            onChange={e => onChange({ label: e.target.value })}
+          />
+        )}
+        {line.type === 'ACCOUNT' && (
+          <select
+            style={{ ...S.select, marginBottom: 0 }}
+            value={line.accountId ?? ''}
+            onChange={e => onChange({ accountId: e.target.value })}
+          >
+            <option value="">— select account —</option>
+            {accounts.map(a => <option key={a.id} value={a.id}>{a.code} — {a.name} ({a.type})</option>)}
+          </select>
+        )}
+        {line.type === 'GROUP' && (
+          <StGroupAccountPicker
+            accounts={accounts}
+            selected={line.accountIds ?? []}
+            onChange={accountIds => onChange({ accountIds })}
+          />
+        )}
+        {line.type === 'SPACER' && (
+          <div style={{ color: '#94a3b8', fontSize: 12, fontStyle: 'italic', paddingTop: 8 }}>(blank row)</div>
+        )}
+      </div>
+      <div style={{ display: 'flex', gap: 6, paddingTop: 4 }}>
+        {(line.type === 'ACCOUNT' || line.type === 'GROUP') && (
+          <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: '#64748b', whiteSpace: 'nowrap' }}>
+            <input type="checkbox" checked={!!line.invert} onChange={e => onChange({ invert: e.target.checked })} />
+            invert
+          </label>
+        )}
+        <button style={{ ...S.btn, padding: '4px 8px', fontSize: 11, color: '#dc2626', borderColor: '#fecaca' }} onClick={onDelete}>✕</button>
+      </div>
+    </div>
+  )
+}
+
+// ─── Group picker (multi-select for GROUP lines) ─────────────────────────────
+function StGroupAccountPicker({ accounts, selected, onChange }: {
+  accounts: Account[]
+  selected: string[]
+  onChange: (ids: string[]) => void
+}) {
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const selectedAccounts = accounts.filter(a => selected.includes(a.id))
+  const toggle = (id: string) => {
+    if (selected.includes(id)) onChange(selected.filter(x => x !== id))
+    else onChange([...selected, id])
+  }
+  return (
+    <div style={{ position: 'relative' }}>
+      <div
+        style={{ minHeight: 34, padding: '4px 8px', border: '1px solid #cbd5e1', borderRadius: 6, fontSize: 12, cursor: 'pointer', background: '#fff', display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}
+        onClick={() => setPickerOpen(o => !o)}
+      >
+        {selectedAccounts.length === 0 && <span style={{ color: '#94a3b8' }}>Pick accounts… (click)</span>}
+        {selectedAccounts.map(a => (
+          <span key={a.id} style={{ background: '#f1f5f9', padding: '2px 6px', borderRadius: 3, fontSize: 11 }}>
+            {a.code}
+          </span>
+        ))}
+      </div>
+      {pickerOpen && (
+        <>
+          <div style={{ position: 'fixed', inset: 0, zIndex: 999 }} onClick={() => setPickerOpen(false)} />
+          <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, marginTop: 4, maxHeight: 240, overflowY: 'auto', background: '#fff', border: '1px solid #e2e8f0', borderRadius: 6, boxShadow: '0 6px 16px rgba(15,23,42,0.1)', zIndex: 1000 }}>
+            {accounts.map(a => (
+              <label key={a.id} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 8px', fontSize: 12, cursor: 'pointer', borderBottom: '1px solid #f8fafc' }}>
+                <input type="checkbox" checked={selected.includes(a.id)} onChange={() => toggle(a.id)} />
+                <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>{a.code}</span>
+                <span style={{ color: '#475569' }}>{a.name}</span>
+                <span style={{ marginLeft: 'auto', fontSize: 10, color: '#94a3b8' }}>{a.type}</span>
+              </label>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+// ─── Runner view ─────────────────────────────────────────────────────────────
+function StTemplateRunner({ templateId, onClose, showToast }: {
+  templateId: string
+  onClose: () => void
+  showToast: (m: string, t?: 'ok'|'err') => void
+}) {
+  const { currentEntity } = useApp()
+  const initial = presetRange('this-year')
+  const [preset, setPreset] = useState<RangePresetId>('this-year')
+  const [from, setFrom] = useState(initial.from)
+  const [to, setTo] = useState(initial.to)
+  const [data, setData] = useState<RunResult | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  const setPresetAndDates = (p: RangePresetId) => {
+    setPreset(p)
+    if (p !== 'custom') {
+      const r = presetRange(p)
+      setFrom(r.from); setTo(r.to)
+    }
+  }
+
+  const run = useCallback(() => {
+    if (!currentEntity) return
+    setLoading(true)
+    const sp = new URLSearchParams({
+      entityId: currentEntity.id, id: templateId, run: '1', from, to,
+    })
+    fetch(`/api/statement-templates?${sp}`)
+      .then(r => r.json())
+      .then(d => { if (d.error) showToast(d.error, 'err'); else setData(d) })
+      .finally(() => setLoading(false))
+  }, [currentEntity, templateId, from, to, showToast])
+
+  useEffect(() => { run() }, [run])
+
+  const exportCsv = () => {
+    if (!data) return
+    const rows: (string | number)[][] = [['Line', 'Value']]
+    for (const r of data.rows) {
+      rows.push([r.label, r.value == null ? '' : r.value])
+    }
+    rows.push(['GRAND TOTAL', data.grandTotal])
+    const csv = rows.map(r => r.map(cell => {
+      const s = String(cell ?? '')
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+    }).join(',')).join('\n')
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${data.template.name}-${from}_to_${to}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  return (
+    <div>
+      <div style={S.pageActions}>
+        <button style={S.btn} onClick={onClose}>← Back to list</button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button style={S.btn} onClick={run} disabled={loading}>{loading ? 'Running…' : 'Refresh'}</button>
+          <button style={{ ...S.btn, ...S.btnPrimary }} onClick={exportCsv} disabled={!data}>Export CSV</button>
+          <button style={S.btn} onClick={() => window.print()}>Print</button>
+        </div>
+      </div>
+
+      <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, padding: 14, marginBottom: 16 }}>
+        <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+          <div>
+            <label style={S.label}>Period</label>
+            <select style={{ ...S.select, minWidth: 160 }} value={preset} onChange={e => setPresetAndDates(e.target.value as RangePresetId)}>
+              <option value="today">Today</option>
+              <option value="this-month">This month</option>
+              <option value="last-month">Last month</option>
+              <option value="this-quarter">This quarter</option>
+              <option value="last-quarter">Last quarter</option>
+              <option value="ytd">Year to date</option>
+              <option value="this-year">This year</option>
+              <option value="last-year">Last year</option>
+              <option value="custom">Custom…</option>
+            </select>
+          </div>
+          <div><label style={S.label}>From</label><input style={S.input} type="date" value={from} onChange={e => { setFrom(e.target.value); setPreset('custom') }} /></div>
+          <div><label style={S.label}>To</label><input style={S.input} type="date" value={to} onChange={e => { setTo(e.target.value); setPreset('custom') }} /></div>
+        </div>
+      </div>
+
+      <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, padding: 24 }}>
+        {loading && <div style={{ textAlign: 'center', padding: 60, color: '#94a3b8' }}>Running…</div>}
+        {!loading && data && (
+          <>
+            <div style={{ borderBottom: '2px solid #0f172a', paddingBottom: 14, marginBottom: 14 }}>
+              <div style={{ fontSize: 12, color: '#94a3b8' }}>{currentEntity?.name}</div>
+              <div style={{ fontSize: 22, fontWeight: 700, marginTop: 2 }}>{data.template.name}</div>
+              <div style={{ fontSize: 12, color: '#64748b', marginTop: 4 }}>{fmtDate(from)} — {fmtDate(to)}</div>
+              {data.template.description && <div style={{ fontSize: 12, color: '#475569', marginTop: 4, fontStyle: 'italic' }}>{data.template.description}</div>}
+            </div>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <tbody>
+                {data.rows.map((r, i) => {
+                  if (r.type === 'SPACER') return <tr key={i}><td colSpan={2} style={{ height: 10 }} /></tr>
+                  if (r.type === 'HEADER') return (
+                    <tr key={i}>
+                      <td colSpan={2} style={{ padding: '12px 0 6px', fontWeight: 700, fontSize: 13, color: '#0f172a', borderBottom: '1px solid #e2e8f0' }}>
+                        {r.label}
+                      </td>
+                    </tr>
+                  )
+                  if (r.type === 'SUBTOTAL') return (
+                    <tr key={i} style={{ background: '#f8fafc' }}>
+                      <td style={{ padding: '8px 4px', fontWeight: 700, fontSize: 13, borderTop: '1px solid #0f172a' }}>{r.label}</td>
+                      <td style={{ padding: '8px 4px', textAlign: 'right', fontFamily: 'monospace', fontWeight: 700, fontSize: 13, borderTop: '1px solid #0f172a' }}>
+                        ${fmt(r.value ?? 0)}
+                      </td>
+                    </tr>
+                  )
+                  // ACCOUNT or GROUP
+                  return (
+                    <tr key={i}>
+                      <td style={{ padding: '4px 4px 4px 16px', fontSize: 13, color: '#334155' }}>{r.label}</td>
+                      <td style={{ padding: '4px 4px', textAlign: 'right', fontFamily: 'monospace', fontSize: 13 }}>
+                        ${fmt(r.value ?? 0)}
+                      </td>
+                    </tr>
+                  )
+                })}
+                <tr>
+                  <td style={{ padding: '14px 4px 4px', fontWeight: 700, fontSize: 14, borderTop: '2px solid #0f172a' }}>Grand total</td>
+                  <td style={{ padding: '14px 4px 4px', textAlign: 'right', fontFamily: 'monospace', fontWeight: 700, fontSize: 14, borderTop: '2px solid #0f172a' }}>
+                    ${fmt(data.grandTotal)}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </>
+        )}
+        {!loading && !data && <div style={{ textAlign: 'center', padding: 60, color: '#94a3b8' }}>No data</div>}
+      </div>
     </div>
   )
 }

@@ -60,6 +60,7 @@ model LegalEntity {
   vendorReconciliations VendorReconciliation[]
   apRequests     ApRequest[]
   attachments    Attachment[]
+  statementTemplates StatementTemplate[]
 
   @@map("legal_entities")
 }
@@ -931,4 +932,35 @@ model ApRequestComment {
 
   @@index([apRequestId])
   @@map("ap_request_comments")
+}
+
+// ─── CUSTOM STATEMENT TEMPLATES ──────────────────────────────────────────────
+// User-defined financial statement layouts. Each template has an ordered list
+// of lines (stored as JSON). At runtime, each line is rendered against the
+// entity's posted journal data for the requested date range.
+//
+// Line types:
+//   HEADER    — section header, no value
+//   ACCOUNT   — single account; shows its natural balance for the range
+//   GROUP     — multiple accounts; shows the sum of their natural balances
+//   SUBTOTAL  — sum of all ACCOUNT and GROUP lines since previous SUBTOTAL
+//   SPACER    — blank row for visual separation
+//
+// Lines stored as JSON gives the user full reorder/edit flexibility without
+// schema churn. Validation happens in the API + runner libraries.
+
+model StatementTemplate {
+  id          String   @id @default(cuid())
+  entityId    String
+  name        String
+  description String?
+  lines       Json                                  // array of line objects (see runner.ts for shape)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  entity      LegalEntity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+
+  @@unique([entityId, name])
+  @@index([entityId])
+  @@map("statement_templates")
 }
