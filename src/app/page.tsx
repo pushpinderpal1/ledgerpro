@@ -36,6 +36,7 @@ const MODULE_ACCESS: Record<string, string[]> = {
   iif:        ['OWNER','ADMIN','ACCOUNTANT'],
   budget:     ['OWNER','ADMIN','ACCOUNTANT','AUDITOR','CLIENT_VIEW'],
   ap:         ['OWNER','ADMIN','ACCOUNTANT','AP_CLERK'],
+  'ap-requests': ['OWNER','ADMIN','ACCOUNTANT','AP_CLERK','AUDITOR'],
   payments:   ['OWNER','ADMIN','ACCOUNTANT','AP_CLERK'],
   recon:      ['OWNER','ADMIN','ACCOUNTANT','AUDITOR'],
   'vendor-recon': ['OWNER','ADMIN','ACCOUNTANT','AUDITOR','AP_CLERK'],
@@ -92,6 +93,7 @@ export default function LedgerProApp() {
     { id: 'iif',       label: 'QB IIF',            icon: '⇄' },
     { id: 'budget',    label: 'Budget & MIS',       icon: '◈' },
     { id: 'ap',        label: 'AP Tracker',         icon: '◎' },
+    { id: 'ap-requests', label: 'Expense Requests', icon: '📥' },
     { id: 'payments',  label: 'Payments',           icon: '✓' },
     { id: 'recon',     label: 'Bank Recon',         icon: '↔' },
     { id: 'vendor-recon', label: 'Vendor Recon',    icon: '◐' },
@@ -213,6 +215,7 @@ export default function LedgerProApp() {
                 {page === 'iif'       && <IifPage        showToast={showToast} />}
                 {page === 'budget'    && <BudgetPage     showToast={showToast} />}
                 {page === 'ap'        && <ApPage         showToast={showToast} />}
+                {page === 'ap-requests' && <ApRequestsPage showToast={showToast} />}
                 {page === 'payments'  && <PaymentsPage   showToast={showToast} />}
                 {page === 'recon'     && <ReconPage      showToast={showToast} />}
                 {page === 'vendor-recon' && <VendorReconPage showToast={showToast} />}
@@ -5634,6 +5637,606 @@ function VendorReconDetail({ id, onClose, canWrite, showToast }: {
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+// ─── Expense Requests (maker-checker AP workflow) ────────────────────────────
+type ApRequestStatusUI = 'SUBMITTED'|'APPROVED'|'POSTED'|'RETURNED_TO_REQUESTER'|'RETURNED_TO_APPROVER'
+type ApPaymentModeUI = 'ACH'|'CHEQUE'|'WIRE'|'OTHER'
+
+interface ApRequestRow {
+  id: string
+  vendor: string
+  invoiceNo: string
+  invoiceDate: string
+  dueDate: string | null
+  amount: number | string
+  accountId: string
+  paymentMode: ApPaymentModeUI | null
+  description: string | null
+  attachmentId: string | null
+  status: ApRequestStatusUI
+  requesterId: string
+  requesterName: string
+  approverId: string | null
+  accountantId: string | null
+  submittedAt: string
+  approvedAt: string | null
+  postedAt: string | null
+  apInvoiceId: string | null
+  createdAt: string
+  account: { code: string; name: string }
+  attachment: { id: string; filename: string } | null
+}
+
+interface ApRequestDetail extends ApRequestRow {
+  account: { id: string; code: string; name: string; type: string }
+  attachment: { id: string; filename: string; mimeType: string; size: number } | null
+  apInvoice: { id: string; status: string; invoiceNo: string } | null
+  requester: { id: string; name: string; email: string } | null
+  approver:  { id: string; name: string; email: string } | null
+  accountant:{ id: string; name: string; email: string } | null
+  comments: Array<{ id: string; userId: string; action: string; comment: string | null; createdAt: string; user: { id: string; name: string } | null }>
+  allowedActions: Array<'submit'|'approve'|'return-to-requester'|'return-to-approver'|'post'|'resubmit'|'delete'>
+}
+
+const STATUS_COLORS: Record<ApRequestStatusUI, { bg: string; fg: string; label: string }> = {
+  SUBMITTED:              { bg: '#dbeafe', fg: '#1d4ed8', label: 'Submitted' },
+  APPROVED:               { bg: '#ddd6fe', fg: '#6d28d9', label: 'Approved' },
+  POSTED:                 { bg: '#dcfce7', fg: '#166534', label: 'Posted' },
+  RETURNED_TO_REQUESTER:  { bg: '#fef3c7', fg: '#92400e', label: 'Returned to requester' },
+  RETURNED_TO_APPROVER:   { bg: '#fed7aa', fg: '#9a3412', label: 'Returned to approver' },
+}
+
+function ApRequestsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => void }) {
+  const { currentEntity, role, user } = useApp()
+  const [filter, setFilter] = useState<'mine'|'pending-approval'|'pending-posting'|'all'>('mine')
+  const [requests, setRequests] = useState<ApRequestRow[]>([])
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [showForm, setShowForm] = useState(false)
+
+  const isApprover = role === 'OWNER' || role === 'ADMIN'
+  const isAccountant = isApprover || role === 'ACCOUNTANT'
+
+  const load = useCallback(() => {
+    if (!currentEntity) return
+    fetch(`/api/ap-requests?entityId=${currentEntity.id}`).then(r => r.json()).then(d => setRequests(d.requests ?? []))
+  }, [currentEntity])
+  useEffect(() => { load() }, [load])
+
+  const filtered = requests.filter(r => {
+    if (filter === 'mine') return r.requesterId === user.id
+    if (filter === 'pending-approval') return r.status === 'SUBMITTED' || r.status === 'RETURNED_TO_APPROVER'
+    if (filter === 'pending-posting') return r.status === 'APPROVED'
+    return true
+  })
+
+  if (selectedId) {
+    return <ApRequestDetailView
+      id={selectedId}
+      showToast={showToast}
+      onClose={() => { setSelectedId(null); load() }}
+    />
+  }
+
+  return (
+    <div>
+      <div style={S.pageActions}>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button style={{ ...S.filterBtn, ...(filter==='mine' ? S.filterBtnActive : {}) }} onClick={() => setFilter('mine')}>My requests</button>
+          {isApprover && (
+            <button style={{ ...S.filterBtn, ...(filter==='pending-approval' ? S.filterBtnActive : {}) }} onClick={() => setFilter('pending-approval')}>
+              Pending my approval
+              {requests.filter(r => r.status === 'SUBMITTED' || r.status === 'RETURNED_TO_APPROVER').length > 0 && (
+                <span style={{ marginLeft: 6, padding: '1px 6px', background: '#dc2626', color: '#fff', borderRadius: 8, fontSize: 10, fontWeight: 700 }}>
+                  {requests.filter(r => r.status === 'SUBMITTED' || r.status === 'RETURNED_TO_APPROVER').length}
+                </span>
+              )}
+            </button>
+          )}
+          {isAccountant && (
+            <button style={{ ...S.filterBtn, ...(filter==='pending-posting' ? S.filterBtnActive : {}) }} onClick={() => setFilter('pending-posting')}>
+              Pending posting
+              {requests.filter(r => r.status === 'APPROVED').length > 0 && (
+                <span style={{ marginLeft: 6, padding: '1px 6px', background: '#7c3aed', color: '#fff', borderRadius: 8, fontSize: 10, fontWeight: 700 }}>
+                  {requests.filter(r => r.status === 'APPROVED').length}
+                </span>
+              )}
+            </button>
+          )}
+          <button style={{ ...S.filterBtn, ...(filter==='all' ? S.filterBtnActive : {}) }} onClick={() => setFilter('all')}>All</button>
+        </div>
+        <button style={{ ...S.btn, ...S.btnPrimary }} onClick={() => setShowForm(true)}>+ New expense request</button>
+      </div>
+
+      {showForm && (
+        <ApRequestForm
+          onClose={() => setShowForm(false)}
+          onCreated={() => { setShowForm(false); load() }}
+          showToast={showToast}
+        />
+      )}
+
+      <div style={S.card}>
+        <table style={S.table}>
+          <thead><tr>{['Vendor','Invoice #','Date','Amount','GL','Payment','Status','Requester',''].map(h => <th key={h} style={S.th}>{h}</th>)}</tr></thead>
+          <tbody>
+            {filtered.length === 0 && <tr><td colSpan={9} style={{ ...S.td, textAlign: 'center', color: '#94a3b8' }}>
+              {filter === 'mine' ? 'You haven\'t submitted any requests yet' : 'No requests in this view'}
+            </td></tr>}
+            {filtered.map(r => {
+              const s = STATUS_COLORS[r.status]
+              return (
+                <tr key={r.id} style={{ cursor: 'pointer' }} onClick={() => setSelectedId(r.id)}>
+                  <td style={{ ...S.td, fontWeight: 500 }}>{r.vendor}</td>
+                  <td style={{ ...S.td, fontFamily: 'monospace', fontSize: 12 }}>{r.invoiceNo}</td>
+                  <td style={S.td}>{fmtDate(r.invoiceDate)}</td>
+                  <td style={{ ...S.td, textAlign: 'right', fontFamily: 'monospace', fontWeight: 600 }}>${fmt(Number(r.amount))}</td>
+                  <td style={{ ...S.td, fontSize: 12 }}>{r.account?.code} — {r.account?.name}</td>
+                  <td style={{ ...S.td, fontSize: 11, color: '#64748b' }}>{r.paymentMode ?? '—'}</td>
+                  <td style={S.td}>
+                    <span style={{ background: s.bg, color: s.fg, padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>
+                      {s.label}
+                    </span>
+                  </td>
+                  <td style={{ ...S.td, fontSize: 12 }}>{r.requesterName}</td>
+                  <td style={{ ...S.td, color: '#94a3b8' }}>›</td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+// ─── Request creation form ───────────────────────────────────────────────────
+function ApRequestForm({ onClose, onCreated, showToast }: {
+  onClose: () => void
+  onCreated: () => void
+  showToast: (m: string, t?: 'ok'|'err') => void
+}) {
+  const { currentEntity } = useApp()
+  const [accounts, setAccounts] = useState<Account[]>([])
+  const [vendors, setVendors] = useState<string[]>([])
+  const [form, setForm] = useState({
+    vendor: '', invoiceNo: '', invoiceDate: new Date().toISOString().slice(0,10),
+    dueDate: '', amount: '', accountId: '', paymentMode: 'ACH' as ApPaymentModeUI,
+    description: '',
+  })
+  const [attachment, setAttachment] = useState<{ id: string; filename: string; size: number } | null>(null)
+  const [uploading, setUploading] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+
+  // Load expense + COGS accounts only for the GL picker
+  useEffect(() => {
+    if (!currentEntity) return
+    fetch(`/api/accounts?entityId=${currentEntity.id}`).then(r => r.json()).then((all: Account[]) =>
+      setAccounts(all.filter(a => a.type === 'EXPENSE' || a.type === 'COGS'))
+    )
+    // Pull vendor list from existing AP invoices
+    fetch(`/api/vendor-recon?entityId=${currentEntity.id}&vendors=1`).then(r => r.json()).then(d => setVendors(d.vendors ?? []))
+  }, [currentEntity])
+
+  // Vendor-default GL lookup
+  useEffect(() => {
+    if (!currentEntity || !form.vendor) return
+    const sp = new URLSearchParams({ entityId: currentEntity.id, vendorDefault: '1', vendor: form.vendor })
+    fetch(`/api/ap-requests?${sp}`).then(r => r.json()).then(d => {
+      if (d.accountId && !form.accountId) {
+        setForm(f => ({ ...f, accountId: d.accountId }))
+      }
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.vendor, currentEntity])
+
+  const handleFile = async (file: File) => {
+    if (!currentEntity) return
+    if (file.size > 5 * 1024 * 1024) return showToast('File too large (max 5MB)', 'err')
+    setUploading(true)
+    try {
+      const dataBase64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => {
+          const result = reader.result as string
+          // result is "data:mime;base64,XXXX" — strip the prefix
+          resolve(result.split(',')[1] ?? '')
+        }
+        reader.onerror = reject
+        reader.readAsDataURL(file)
+      })
+      const res = await fetch('/api/attachments', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          entityId: currentEntity.id,
+          filename: file.name,
+          mimeType: file.type || 'application/octet-stream',
+          dataBase64,
+        }),
+      })
+      const data = await res.json()
+      if (res.ok) {
+        setAttachment(data)
+        showToast(`Uploaded ${file.name}`)
+      } else showToast(data.error ?? 'Upload failed', 'err')
+    } finally { setUploading(false) }
+  }
+
+  const submit = async () => {
+    if (!currentEntity) return
+    if (!form.vendor || !form.invoiceNo || !form.amount || !form.accountId) {
+      return showToast('Vendor, invoice number, amount, and GL account are required', 'err')
+    }
+    setSubmitting(true)
+    try {
+      const res = await fetch('/api/ap-requests', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          entityId: currentEntity.id,
+          vendor: form.vendor,
+          invoiceNo: form.invoiceNo,
+          invoiceDate: form.invoiceDate,
+          dueDate: form.dueDate || undefined,
+          amount: parseFloat(form.amount) || 0,
+          accountId: form.accountId,
+          paymentMode: form.paymentMode,
+          description: form.description || undefined,
+          attachmentId: attachment?.id,
+        }),
+      })
+      const data = await res.json()
+      if (res.ok) {
+        showToast('Request submitted for approval')
+        onCreated()
+      } else showToast(data.error ?? 'Failed to submit', 'err')
+    } finally { setSubmitting(false) }
+  }
+
+  return (
+    <div style={{ ...S.card, marginBottom: 16 }}>
+      <div style={S.cardHeader}>New expense request</div>
+      <div style={S.formGrid}>
+        <div>
+          <label style={S.label}>Vendor</label>
+          <input
+            list="apreq-vendors"
+            style={S.input}
+            value={form.vendor}
+            onChange={e => setForm(f => ({ ...f, vendor: e.target.value }))}
+            placeholder="Vendor name"
+          />
+          <datalist id="apreq-vendors">{vendors.map(v => <option key={v} value={v} />)}</datalist>
+        </div>
+        <div>
+          <label style={S.label}>Invoice #</label>
+          <input style={S.input} value={form.invoiceNo} onChange={e => setForm(f => ({ ...f, invoiceNo: e.target.value }))} placeholder="INV-1234" />
+        </div>
+        <div>
+          <label style={S.label}>Invoice date</label>
+          <input style={S.input} type="date" value={form.invoiceDate} onChange={e => setForm(f => ({ ...f, invoiceDate: e.target.value }))} />
+        </div>
+        <div>
+          <label style={S.label}>Due date (optional)</label>
+          <input style={S.input} type="date" value={form.dueDate} onChange={e => setForm(f => ({ ...f, dueDate: e.target.value }))} />
+        </div>
+        <div>
+          <label style={S.label}>Amount</label>
+          <input style={S.input} value={form.amount} onChange={e => setForm(f => ({ ...f, amount: e.target.value }))} placeholder="0.00" />
+        </div>
+        <div>
+          <label style={S.label}>GL account (expense)</label>
+          <select style={S.select} value={form.accountId} onChange={e => setForm(f => ({ ...f, accountId: e.target.value }))}>
+            <option value="">Select expense account…</option>
+            {accounts.map(a => <option key={a.id} value={a.id}>{a.code} — {a.name}</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={S.label}>Payment mode</label>
+          <select style={S.select} value={form.paymentMode} onChange={e => setForm(f => ({ ...f, paymentMode: e.target.value as ApPaymentModeUI }))}>
+            <option value="ACH">ACH</option>
+            <option value="CHEQUE">Cheque</option>
+            <option value="WIRE">Wire</option>
+            <option value="OTHER">Other</option>
+          </select>
+        </div>
+        <div>
+          <label style={S.label}>Invoice attachment (PDF / image)</label>
+          {attachment ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 8px', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 6 }}>
+              <span style={{ fontSize: 12 }}>✓ {attachment.filename} ({fmtCompactBytes(attachment.size)})</span>
+              <button style={{ ...S.textBtn, color: '#dc2626', marginLeft: 'auto' }} onClick={() => setAttachment(null)}>Remove</button>
+            </div>
+          ) : (
+            <input
+              type="file"
+              accept="application/pdf,image/png,image/jpeg,image/jpg,image/webp"
+              disabled={uploading}
+              onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f) }}
+              style={{ fontSize: 12 }}
+            />
+          )}
+          {uploading && <div style={{ fontSize: 11, color: '#64748b', marginTop: 4 }}>Uploading…</div>}
+        </div>
+      </div>
+      <textarea
+        style={{ width: '100%', minHeight: 60, padding: 8, border: '1px solid #e2e8f0', borderRadius: 6, marginTop: 12, fontFamily: 'inherit', fontSize: 13 }}
+        placeholder="Description / notes (optional)"
+        value={form.description}
+        onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
+      />
+      <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+        <button style={{ ...S.btn, ...S.btnPrimary }} onClick={submit} disabled={submitting}>
+          {submitting ? 'Submitting…' : 'Submit for approval'}
+        </button>
+        <button style={S.btn} onClick={onClose}>Cancel</button>
+      </div>
+    </div>
+  )
+}
+
+function fmtCompactBytes(b: number): string {
+  if (b >= 1024 * 1024) return (b / (1024 * 1024)).toFixed(1) + ' MB'
+  if (b >= 1024) return (b / 1024).toFixed(1) + ' KB'
+  return b + ' B'
+}
+
+// ─── Detail view with workflow actions and comment trail ─────────────────────
+function ApRequestDetailView({ id, onClose, showToast }: {
+  id: string
+  onClose: () => void
+  showToast: (m: string, t?: 'ok'|'err') => void
+}) {
+  const { currentEntity, user } = useApp()
+  const [data, setData] = useState<ApRequestDetail | null>(null)
+  const [accounts, setAccounts] = useState<Account[]>([])
+  const [commentText, setCommentText] = useState('')
+  const [editing, setEditing] = useState(false)
+  const [editForm, setEditForm] = useState<{
+    vendor: string; invoiceNo: string; invoiceDate: string; dueDate: string
+    amount: string; accountId: string; paymentMode: ApPaymentModeUI; description: string
+  } | null>(null)
+
+  const load = useCallback(() => {
+    if (!currentEntity) return
+    fetch(`/api/ap-requests?entityId=${currentEntity.id}&id=${id}`).then(r => r.json()).then(d => {
+      if (!d.error) setData(d)
+    })
+    fetch(`/api/accounts?entityId=${currentEntity.id}`).then(r => r.json()).then((all: Account[]) =>
+      setAccounts(all.filter(a => a.type === 'EXPENSE' || a.type === 'COGS'))
+    )
+  }, [currentEntity, id])
+  useEffect(() => { load() }, [load])
+
+  if (!data) return <div style={{ padding: 40, textAlign: 'center', color: '#94a3b8' }}>Loading…</div>
+
+  const isRequester = data.requesterId === user.id
+  const canEdit = data.allowedActions.length > 0 && (
+    (isRequester && (data.status === 'SUBMITTED' || data.status === 'RETURNED_TO_REQUESTER')) ||
+    (data.status === 'APPROVED' && data.allowedActions.includes('post'))
+  )
+
+  const startEdit = () => {
+    setEditForm({
+      vendor: data.vendor,
+      invoiceNo: data.invoiceNo,
+      invoiceDate: data.invoiceDate.slice(0,10),
+      dueDate: data.dueDate ? data.dueDate.slice(0,10) : '',
+      amount: String(Number(data.amount)),
+      accountId: data.accountId,
+      paymentMode: data.paymentMode ?? 'ACH',
+      description: data.description ?? '',
+    })
+    setEditing(true)
+  }
+  const saveEdit = async () => {
+    if (!currentEntity || !editForm) return
+    const res = await fetch('/api/ap-requests', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        entityId: currentEntity.id, id, action: 'edit',
+        comment: commentText || undefined,
+        edit: {
+          vendor: editForm.vendor,
+          invoiceNo: editForm.invoiceNo,
+          invoiceDate: editForm.invoiceDate,
+          dueDate: editForm.dueDate || null,
+          amount: parseFloat(editForm.amount) || 0,
+          accountId: editForm.accountId,
+          paymentMode: editForm.paymentMode,
+          description: editForm.description || null,
+        },
+      }),
+    })
+    const d = await res.json()
+    if (res.ok) { showToast('Saved'); setEditing(false); setCommentText(''); load() }
+    else showToast(d.error ?? 'Error', 'err')
+  }
+
+  const doAction = async (action: 'approve'|'return-to-requester'|'return-to-approver'|'post'|'resubmit'|'delete') => {
+    if (!currentEntity) return
+    const labels: Record<string, string> = {
+      approve: 'Approve this request?',
+      'return-to-requester': 'Return to requester — please add a comment explaining what to fix',
+      'return-to-approver': 'Return to approver — please add a comment',
+      post: 'Post this request to the GL? This creates a journal entry and cannot be easily undone.',
+      resubmit: 'Resubmit this request for approval?',
+      delete: 'Delete this request permanently?',
+    }
+    if (!confirm(labels[action])) return
+    if (action.startsWith('return') && !commentText.trim()) {
+      showToast('Please add a comment explaining the reason', 'err')
+      return
+    }
+    const res = await fetch('/api/ap-requests', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        entityId: currentEntity.id, id, action,
+        comment: commentText || undefined,
+      }),
+    })
+    const d = await res.json()
+    if (res.ok) {
+      showToast(action === 'delete' ? 'Deleted' : 'Done')
+      setCommentText('')
+      if (action === 'delete') onClose()
+      else load()
+    } else showToast(d.error ?? 'Error', 'err')
+  }
+
+  const downloadAttachment = async () => {
+    if (!currentEntity || !data.attachment) return
+    const res = await fetch(`/api/attachments?entityId=${currentEntity.id}&id=${data.attachment.id}`)
+    const d = await res.json()
+    if (!res.ok) return showToast(d.error ?? 'Download failed', 'err')
+    // Reconstruct the file from base64 and trigger a download in-browser.
+    const bin = atob(d.dataBase64)
+    const arr = new Uint8Array(bin.length)
+    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i)
+    const blob = new Blob([arr], { type: d.mimeType })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url; a.download = d.filename; a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const status = STATUS_COLORS[data.status]
+  const allow = new Set(data.allowedActions)
+
+  return (
+    <div>
+      <div style={S.pageActions}>
+        <button style={S.btn} onClick={onClose}>← Back to list</button>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {canEdit && !editing && <button style={S.btn} onClick={startEdit}>Edit fields</button>}
+          {allow.has('approve') && <button style={{ ...S.btn, ...S.btnPrimary, background: '#7c3aed', borderColor: '#7c3aed' }} onClick={() => doAction('approve')}>Approve</button>}
+          {allow.has('post') && <button style={{ ...S.btn, ...S.btnPrimary, background: '#16a34a', borderColor: '#16a34a' }} onClick={() => doAction('post')}>Post to GL</button>}
+          {allow.has('resubmit') && <button style={{ ...S.btn, ...S.btnPrimary }} onClick={() => doAction('resubmit')}>Resubmit</button>}
+          {allow.has('return-to-approver') && <button style={{ ...S.btn, background: '#fed7aa', borderColor: '#fb923c', color: '#9a3412' }} onClick={() => doAction('return-to-approver')}>Send back to approver</button>}
+          {allow.has('return-to-requester') && <button style={{ ...S.btn, background: '#fef3c7', borderColor: '#fbbf24', color: '#92400e' }} onClick={() => doAction('return-to-requester')}>Send back to requester</button>}
+          {allow.has('delete') && <button style={{ ...S.btn, color: '#dc2626', borderColor: '#fecaca' }} onClick={() => doAction('delete')}>Delete</button>}
+        </div>
+      </div>
+
+      <div style={{ ...S.card, marginBottom: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+          <div>
+            <div style={{ fontSize: 22, fontWeight: 700 }}>{data.vendor}</div>
+            <div style={{ fontSize: 13, color: '#64748b' }}>Invoice {data.invoiceNo} · {fmtDate(data.invoiceDate)}</div>
+          </div>
+          <span style={{ background: status.bg, color: status.fg, padding: '6px 14px', borderRadius: 6, fontSize: 12, fontWeight: 700 }}>
+            {status.label}
+          </span>
+        </div>
+
+        {editing && editForm ? (
+          <div style={S.formGrid}>
+            <div><label style={S.label}>Vendor</label><input style={S.input} value={editForm.vendor} onChange={e => setEditForm(f => f ? ({ ...f, vendor: e.target.value }) : f)} /></div>
+            <div><label style={S.label}>Invoice #</label><input style={S.input} value={editForm.invoiceNo} onChange={e => setEditForm(f => f ? ({ ...f, invoiceNo: e.target.value }) : f)} /></div>
+            <div><label style={S.label}>Invoice date</label><input style={S.input} type="date" value={editForm.invoiceDate} onChange={e => setEditForm(f => f ? ({ ...f, invoiceDate: e.target.value }) : f)} /></div>
+            <div><label style={S.label}>Due date</label><input style={S.input} type="date" value={editForm.dueDate} onChange={e => setEditForm(f => f ? ({ ...f, dueDate: e.target.value }) : f)} /></div>
+            <div><label style={S.label}>Amount</label><input style={S.input} value={editForm.amount} onChange={e => setEditForm(f => f ? ({ ...f, amount: e.target.value }) : f)} /></div>
+            <div>
+              <label style={S.label}>GL account</label>
+              <select style={S.select} value={editForm.accountId} onChange={e => setEditForm(f => f ? ({ ...f, accountId: e.target.value }) : f)}>
+                {accounts.map(a => <option key={a.id} value={a.id}>{a.code} — {a.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={S.label}>Payment mode</label>
+              <select style={S.select} value={editForm.paymentMode} onChange={e => setEditForm(f => f ? ({ ...f, paymentMode: e.target.value as ApPaymentModeUI }) : f)}>
+                <option value="ACH">ACH</option><option value="CHEQUE">Cheque</option><option value="WIRE">Wire</option><option value="OTHER">Other</option>
+              </select>
+            </div>
+            <div style={{ gridColumn: '1/-1' }}><label style={S.label}>Description</label><input style={S.input} value={editForm.description} onChange={e => setEditForm(f => f ? ({ ...f, description: e.target.value }) : f)} /></div>
+          </div>
+        ) : (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 16 }}>
+            <Field label="Amount" value={`$${fmt(Number(data.amount))}`} mono />
+            <Field label="GL Account" value={`${data.account.code} — ${data.account.name}`} />
+            <Field label="Payment mode" value={data.paymentMode ?? '—'} />
+            <Field label="Due date" value={data.dueDate ? fmtDate(data.dueDate) : '—'} />
+            <Field label="Requester" value={data.requester?.name ?? '—'} />
+            {data.approver && <Field label="Approver" value={data.approver.name} />}
+            {data.accountant && <Field label="Posted by" value={data.accountant.name} />}
+          </div>
+        )}
+
+        {!editing && data.description && (
+          <div style={{ marginTop: 16, padding: 10, background: '#f8fafc', borderRadius: 6, fontSize: 13 }}>
+            <div style={{ fontSize: 10, color: '#94a3b8', textTransform: 'uppercase', marginBottom: 4 }}>Description</div>
+            {data.description}
+          </div>
+        )}
+
+        {data.attachment && (
+          <div style={{ marginTop: 16 }}>
+            <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', marginBottom: 4 }}>Attachment</div>
+            <button style={{ ...S.btn, padding: '6px 14px' }} onClick={downloadAttachment}>
+              📎 {data.attachment.filename} ({fmtCompactBytes(data.attachment.size)})
+            </button>
+          </div>
+        )}
+
+        {data.apInvoice && (
+          <div style={{ marginTop: 16, padding: 10, background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 6, fontSize: 13 }}>
+            <strong>Posted as AP invoice {data.apInvoice.invoiceNo}</strong> — status: {data.apInvoice.status}
+          </div>
+        )}
+
+        {editing && (
+          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+            <button style={{ ...S.btn, ...S.btnPrimary }} onClick={saveEdit}>Save changes</button>
+            <button style={S.btn} onClick={() => setEditing(false)}>Cancel</button>
+          </div>
+        )}
+      </div>
+
+      {/* Comment input for workflow actions */}
+      {data.allowedActions.length > 0 && (
+        <div style={{ ...S.card, marginBottom: 16 }}>
+          <div style={S.cardHeader}>Add a comment with your action</div>
+          <textarea
+            style={{ width: '100%', minHeight: 60, padding: 8, border: '1px solid #e2e8f0', borderRadius: 6, fontFamily: 'inherit', fontSize: 13 }}
+            placeholder="Optional for approve/post. Required for 'send back' actions."
+            value={commentText}
+            onChange={e => setCommentText(e.target.value)}
+          />
+        </div>
+      )}
+
+      {/* Comment trail */}
+      <div style={S.card}>
+        <div style={S.cardHeader}>Activity</div>
+        <div>
+          {data.comments.length === 0 && <div style={{ padding: 20, textAlign: 'center', color: '#94a3b8', fontSize: 13 }}>No activity yet</div>}
+          {data.comments.map(c => (
+            <div key={c.id} style={{ display: 'flex', gap: 12, padding: '10px 0', borderBottom: '1px solid #f1f5f9' }}>
+              <div style={{ flex: '0 0 32px', width: 32, height: 32, borderRadius: 16, background: '#e2e8f0', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: 12, color: '#475569' }}>
+                {c.user?.name.charAt(0).toUpperCase() ?? '?'}
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 13 }}>
+                  <strong>{c.user?.name ?? '(unknown)'}</strong>
+                  <span style={{ marginLeft: 6, fontSize: 11, color: '#64748b' }}>{c.action.replace(/_/g, ' ').toLowerCase()}</span>
+                  <span style={{ marginLeft: 'auto', float: 'right', fontSize: 11, color: '#94a3b8' }}>{new Date(c.createdAt).toLocaleString()}</span>
+                </div>
+                {c.comment && <div style={{ marginTop: 4, padding: 8, background: '#f8fafc', borderRadius: 6, fontSize: 13 }}>{c.comment}</div>}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function Field({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div>
+      <div style={{ fontSize: 10, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.06, marginBottom: 4 }}>{label}</div>
+      <div style={{ fontSize: 14, fontWeight: 500, ...(mono ? { fontFamily: 'monospace' } : {}) }}>{value}</div>
     </div>
   )
 }

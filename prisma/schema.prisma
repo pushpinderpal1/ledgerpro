@@ -58,6 +58,8 @@ model LegalEntity {
   depreciationEntries DepreciationEntry[]
   misCodes       MisCode[]
   vendorReconciliations VendorReconciliation[]
+  apRequests     ApRequest[]
+  attachments    Attachment[]
 
   @@map("legal_entities")
 }
@@ -181,6 +183,7 @@ model Account {
   children     Account[]    @relation("AccountHierarchy")
   journalLines JournalLine[]
   apInvoices   ApInvoice[]
+  apRequests   ApRequest[]  @relation("ApRequestAccount")
   budgetLines  BudgetLine[]
   paymentsFrom Payment[]            @relation("PaymentBankAccount")
   reconciliations BankReconciliation[]
@@ -317,6 +320,7 @@ model ApInvoice {
   client   Client?     @relation(fields: [clientId], references: [id], onDelete: SetNull)
   account  Account?    @relation(fields: [accountId], references: [id], onDelete: SetNull)
   payments ApPayment[]
+  apRequest ApRequest? @relation("ApRequestInvoice")
 
   @@map("ap_invoices")
 }
@@ -826,4 +830,105 @@ model AuditLog {
   user   User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   @@map("audit_logs")
+}
+
+// ─── AP REQUEST WORKFLOW ──────────────────────────────────────────────────────
+// Maker-checker workflow for expense AP. Three roles:
+//   Requester  — creates a request with invoice attachment + GL code + amount
+//   Approver   — approves, returns to requester (with comments)
+//   Accountant — posts to GL (creates ApInvoice + JE), can correct fields,
+//                or return to approver/requester
+//
+// Once POSTED, an ApInvoice is created and linked via apInvoiceId. The
+// existing ApInvoice flow (which posts its own journal entry) is bypassed
+// in favor of an explicit JE created here so we have full control.
+
+enum ApRequestStatus {
+  SUBMITTED                  // awaiting approver
+  APPROVED                   // awaiting accountant to post
+  POSTED                     // accountant posted to GL
+  RETURNED_TO_REQUESTER      // sent back from approver or accountant; needs requester fix
+  RETURNED_TO_APPROVER       // sent back from accountant; needs approver re-review
+}
+
+enum ApPaymentMode {
+  ACH
+  CHEQUE
+  WIRE
+  OTHER
+}
+
+model Attachment {
+  id         String      @id @default(cuid())
+  entityId   String
+  filename   String
+  mimeType   String
+  size       Int                                     // bytes
+  data       Bytes                                   // file content
+  uploadedBy String?                                 // userId (no FK to avoid User-relation explosion)
+  createdAt  DateTime    @default(now())
+
+  entity     LegalEntity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  apRequests ApRequest[]
+
+  @@index([entityId])
+  @@map("attachments")
+}
+
+model ApRequest {
+  id              String           @id @default(cuid())
+  entityId        String
+
+  // Invoice header fields (mirror ApInvoice for transition)
+  vendor          String
+  invoiceNo       String
+  invoiceDate     DateTime
+  dueDate         DateTime?
+  amount          Decimal          @db.Decimal(18, 2)
+  accountId       String                                       // expense GL
+  paymentMode     ApPaymentMode?
+  description     String?
+
+  // Attachment (optional but practically required)
+  attachmentId    String?
+
+  // Workflow
+  status          ApRequestStatus  @default(SUBMITTED)
+  requesterId     String                                       // user who submitted
+  approverId      String?                                      // user who approved (once APPROVED)
+  accountantId    String?                                      // user who posted (once POSTED)
+
+  submittedAt     DateTime         @default(now())
+  approvedAt      DateTime?
+  postedAt        DateTime?
+
+  // Link to the ApInvoice created when posted
+  apInvoiceId     String?          @unique
+
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  entity          LegalEntity      @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  account         Account          @relation("ApRequestAccount", fields: [accountId], references: [id], onDelete: Restrict)
+  attachment      Attachment?      @relation(fields: [attachmentId], references: [id], onDelete: SetNull)
+  apInvoice       ApInvoice?       @relation("ApRequestInvoice", fields: [apInvoiceId], references: [id], onDelete: SetNull)
+  comments        ApRequestComment[]
+
+  @@index([entityId, status])
+  @@index([requesterId])
+  @@map("ap_requests")
+}
+
+model ApRequestComment {
+  id          String    @id @default(cuid())
+  apRequestId String
+  userId      String                                  // who acted (no FK; keep User clean)
+  action      String                                  // SUBMITTED, APPROVED, RETURNED_TO_REQUESTER, etc.
+  comment     String?
+  createdAt   DateTime  @default(now())
+
+  apRequest   ApRequest @relation(fields: [apRequestId], references: [id], onDelete: Cascade)
+
+  @@index([apRequestId])
+  @@map("ap_request_comments")
 }

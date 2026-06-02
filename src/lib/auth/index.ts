@@ -118,6 +118,9 @@ export const MODULE_PERMISSIONS: Record<string, EntityRole> = {
   'journals:write':  'ACCOUNTANT',
   'ap:read':         'AP_CLERK',
   'ap:write':        'AP_CLERK',
+  'ap-request:submit':  'AP_CLERK',                 // anyone above AP_CLERK
+  'ap-request:approve': 'ADMIN',                    // OWNER/ADMIN only
+  'ap-request:post':    'ACCOUNTANT',               // OWNER/ADMIN/ACCOUNTANT
   'payments:read':   'AP_CLERK',
   'payments:write':  'ACCOUNTANT',
   'recon:read':      'AUDITOR',
