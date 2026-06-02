@@ -129,36 +129,119 @@ export async function POST(req: NextRequest) {
   }
 }
 
-// Record a payment against an AP invoice
-export async function recordPayment(
-  req: NextRequest,
-  invoiceId: string,
-  entityId: string
-) {
-  const auth = await requireEntityAccess(req, entityId, 'ap:write')
-  if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
+// PATCH /api/ap — record a payment against an AP invoice.
+// Body: { entityId, invoiceId, amount, paidOn, method, reference?, bankAccountId }
+// Creates ApPayment + balanced JE (DR Accounts Payable / CR Bank) in one
+// transaction, and updates the invoice's amountPaid + status.
+const paymentSchema = z.object({
+  entityId: z.string(),
+  invoiceId: z.string(),
+  amount: z.number().positive(),
+  paidOn: z.string(),
+  method: z.enum(['CASH', 'CHEQUE', 'ACH', 'WIRE', 'OTHER']),
+  reference: z.string().max(120).optional(),
+  bankAccountId: z.string(),
+})
 
-  const { amount, paidOn, method, reference } = await req.json()
+export async function PATCH(req: NextRequest) {
+  try {
+    const body = paymentSchema.parse(await req.json())
+    const auth = await requireEntityAccess(req, body.entityId, 'ap:write')
+    if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
-  const invoice = await db.apInvoice.findFirst({ where: { id: invoiceId, entityId } })
-  if (!invoice) return NextResponse.json({ error: 'Invoice not found' }, { status: 404 })
-
-  const newAmountPaid = Number(invoice.amountPaid) + amount
-  const balance = Number(invoice.amount) - newAmountPaid
-
-  await db.$transaction(async (tx) => {
-    await tx.apPayment.create({
-      data: { invoiceId, amount, paidOn: new Date(paidOn), method, reference },
+    const invoice = await db.apInvoice.findFirst({
+      where: { id: body.invoiceId, entityId: body.entityId },
     })
-    await tx.apInvoice.update({
-      where: { id: invoiceId },
-      data: {
-        amountPaid: newAmountPaid,
-        status: balance <= 0.005 ? 'PAID' : 'PARTIALLY_PAID',
-        paidAt: balance <= 0.005 ? new Date() : null,
-      },
-    })
-  })
+    if (!invoice) return NextResponse.json({ error: 'Invoice not found' }, { status: 404 })
+    if (invoice.status === 'VOID') return NextResponse.json({ error: 'Cannot pay a voided invoice' }, { status: 400 })
+    if (invoice.status === 'PAID') return NextResponse.json({ error: 'Invoice is already fully paid' }, { status: 400 })
 
-  return NextResponse.json({ success: true })
+    const currentBalance = Number(invoice.amount) - Number(invoice.amountPaid)
+    if (body.amount > currentBalance + 0.005) {
+      return NextResponse.json({
+        error: `Payment $${body.amount.toFixed(2)} exceeds outstanding balance $${currentBalance.toFixed(2)}`,
+      }, { status: 400 })
+    }
+
+    // Validate the bank account
+    const bankAccount = await db.account.findFirst({
+      where: { id: body.bankAccountId, entityId: body.entityId, isActive: true },
+    })
+    if (!bankAccount) return NextResponse.json({ error: 'Bank account not found' }, { status: 400 })
+    if (!bankAccount.isBankAccount) {
+      return NextResponse.json({
+        error: 'Selected account is not flagged as a bank account. Edit the account and tick "Is bank account".',
+      }, { status: 400 })
+    }
+
+    // Find AP control account (code "2000" — same convention as elsewhere)
+    const apAccount = await db.account.findFirst({
+      where: { entityId: body.entityId, code: '2000' },
+    })
+    if (!apAccount) {
+      return NextResponse.json({
+        error: 'AP control account (code 2000) not found in this entity.',
+      }, { status: 400 })
+    }
+
+    const newAmountPaid = Number(invoice.amountPaid) + body.amount
+    const newBalance = Number(invoice.amount) - newAmountPaid
+    const fullyPaid = newBalance <= 0.005
+
+    // Everything in one transaction
+    const result = await db.$transaction(async (tx) => {
+      const payment = await tx.apPayment.create({
+        data: {
+          invoiceId: body.invoiceId,
+          amount: body.amount,
+          paidOn: new Date(body.paidOn),
+          method: body.method,
+          reference: body.reference,
+        },
+      })
+
+      const count = await tx.journalEntry.count({ where: { entityId: body.entityId } })
+      const je = await tx.journalEntry.create({
+        data: {
+          entityId: body.entityId,
+          ref: `APP-${new Date().getFullYear()}-${String(count + 1).padStart(4, '0')}`,
+          date: new Date(body.paidOn),
+          description: `AP Payment: ${invoice.vendor} #${invoice.invoiceNo} (${body.method})`,
+          status: 'POSTED',
+          source: 'AP',
+          postedAt: new Date(),
+          createdBy: auth.session?.userId,
+          lines: {
+            create: [
+              { accountId: apAccount.id, debit: body.amount, credit: 0, lineOrder: 0,
+                description: `Pay ${invoice.vendor} - ${invoice.invoiceNo}` },
+              { accountId: body.bankAccountId, debit: 0, credit: body.amount, lineOrder: 1,
+                description: `${body.method}${body.reference ? ' #' + body.reference : ''}` },
+            ],
+          },
+        },
+      })
+
+      const updatedInvoice = await tx.apInvoice.update({
+        where: { id: body.invoiceId },
+        data: {
+          amountPaid: newAmountPaid,
+          status: fullyPaid ? 'PAID' : 'PARTIALLY_PAID',
+          paidAt: fullyPaid ? new Date() : null,
+        },
+      })
+
+      return { payment, je, invoice: updatedInvoice }
+    })
+
+    return NextResponse.json({
+      success: true,
+      payment: result.payment,
+      journalRef: result.je.ref,
+      invoice: result.invoice,
+    })
+  } catch (e) {
+    if (e instanceof z.ZodError) return NextResponse.json({ error: e.errors }, { status: 400 })
+    return NextResponse.json({ error: (e as Error).message }, { status: 500 })
+  }
 }

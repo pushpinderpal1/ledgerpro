@@ -1462,6 +1462,7 @@ function ApPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => void 
   const [summary, setSummary] = useState({ total:0, overdueCount:0, overdue30:0, overdue90plus:0 })
   const [accounts, setAccounts] = useState<Account[]>([])
   const [showForm, setShowForm] = useState(false)
+  const [payingInvoice, setPayingInvoice] = useState<ApInvoice | null>(null)
   const [form, setForm] = useState({ vendor:'', invoiceNo:'', invoiceDate:'', dueDate:'', amount:'', accountId:'', notes:'' })
   const canWrite = ['OWNER','ADMIN','ACCOUNTANT','AP_CLERK'].includes(role)
 
@@ -1542,10 +1543,155 @@ function ApPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => void 
               <td style={{...S.td,textAlign:'right',fontFamily:'monospace',fontWeight:600}}>${fmt(inv.balance)}</td>
               <td style={S.td}><span style={{color: AGING_COLORS[inv.agingBucket]??'#64748b',fontWeight:600,fontSize:11}}>{inv.agingBucket}</span></td>
               <td style={S.td}><StatusBadge status={inv.status} /></td>
-              <td style={S.td}>{canWrite && <button style={{...S.btn,padding:'3px 10px',fontSize:11}}>Pay</button>}</td>
+              <td style={S.td}>{canWrite && inv.status !== 'PAID' && inv.status !== 'VOID' && <button style={{...S.btn,padding:'3px 10px',fontSize:11}} onClick={() => setPayingInvoice(inv)}>Pay</button>}</td>
             </tr>
           ))}</tbody>
         </table>
+      </div>
+      {payingInvoice && (
+        <PayInvoiceModal
+          invoice={payingInvoice}
+          accounts={accounts}
+          onClose={() => setPayingInvoice(null)}
+          onPaid={() => { setPayingInvoice(null); load() }}
+          showToast={showToast}
+        />
+      )}
+    </div>
+  )
+}
+
+// ─── Pay Invoice modal ────────────────────────────────────────────────────────
+function PayInvoiceModal({ invoice, accounts, onClose, onPaid, showToast }: {
+  invoice: ApInvoice
+  accounts: Account[]
+  onClose: () => void
+  onPaid: () => void
+  showToast: (m: string, t?: 'ok'|'err') => void
+}) {
+  const { currentEntity } = useApp()
+  const balance = Number(invoice.balance)
+  const [amount, setAmount] = useState(balance.toFixed(2))
+  const [paidOn, setPaidOn] = useState(new Date().toISOString().slice(0, 10))
+  const [method, setMethod] = useState<'CASH'|'CHEQUE'|'ACH'|'WIRE'|'OTHER'>('ACH')
+  const [bankAccountId, setBankAccountId] = useState('')
+  const [reference, setReference] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+
+  const bankAccounts = accounts.filter(a => a.isBankAccount && a.isActive)
+
+  // Default to the first bank account
+  useEffect(() => {
+    if (bankAccounts.length > 0 && !bankAccountId) setBankAccountId(bankAccounts[0].id)
+  }, [bankAccounts, bankAccountId])
+
+  const submit = async () => {
+    if (!currentEntity) return
+    const amt = parseFloat(amount)
+    if (!amt || amt <= 0) return showToast('Enter a positive amount', 'err')
+    if (amt > balance + 0.005) return showToast(`Amount exceeds outstanding balance ($${balance.toFixed(2)})`, 'err')
+    if (!bankAccountId) return showToast('Select a bank account', 'err')
+
+    setSubmitting(true)
+    try {
+      const res = await fetch('/api/ap', {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          entityId: currentEntity.id,
+          invoiceId: invoice.id,
+          amount: amt,
+          paidOn,
+          method,
+          reference: reference || undefined,
+          bankAccountId,
+        }),
+      })
+      const d = await res.json()
+      if (res.ok) {
+        showToast(`Payment recorded — journal ${d.journalRef}`)
+        onPaid()
+      } else {
+        showToast(d.error ?? 'Payment failed', 'err')
+      }
+    } finally { setSubmitting(false) }
+  }
+
+  return (
+    <div
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.5)',
+        display: 'flex', alignItems: 'flex-start', justifyContent: 'center',
+        zIndex: 1000, padding: '40px 20px', overflowY: 'auto',
+      }}
+      onClick={onClose}
+    >
+      <div
+        style={{
+          background: '#fff', borderRadius: 8, width: '100%', maxWidth: 540,
+          padding: 24, boxShadow: '0 20px 50px rgba(15,23,42,0.3)',
+        }}
+        onClick={e => e.stopPropagation()}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+          <div>
+            <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.06 }}>Record AP payment</div>
+            <div style={{ fontSize: 18, fontWeight: 700 }}>{invoice.vendor} — Invoice {invoice.invoiceNo}</div>
+            <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>
+              Outstanding balance: <strong style={{ fontFamily: 'monospace', color: '#0f172a' }}>${fmt(balance)}</strong>
+            </div>
+          </div>
+          <button onClick={onClose} style={{ ...S.btn, padding: '4px 12px' }}>✕</button>
+        </div>
+
+        {bankAccounts.length === 0 && (
+          <div style={{ padding: 12, background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, fontSize: 13, color: '#991b1b', marginBottom: 16 }}>
+            No bank accounts available. Go to Chart of Accounts → edit a bank-type account → tick "Is bank account".
+          </div>
+        )}
+
+        <div style={S.formGrid}>
+          <div>
+            <label style={S.label}>Amount</label>
+            <input style={S.input} value={amount} onChange={e => setAmount(e.target.value)} placeholder="0.00" />
+          </div>
+          <div>
+            <label style={S.label}>Payment date</label>
+            <input style={S.input} type="date" value={paidOn} onChange={e => setPaidOn(e.target.value)} />
+          </div>
+          <div>
+            <label style={S.label}>Method</label>
+            <select style={S.select} value={method} onChange={e => setMethod(e.target.value as typeof method)}>
+              <option value="ACH">ACH</option>
+              <option value="CHEQUE">Cheque</option>
+              <option value="WIRE">Wire</option>
+              <option value="CASH">Cash</option>
+              <option value="OTHER">Other</option>
+            </select>
+          </div>
+          <div>
+            <label style={S.label}>From bank account</label>
+            <select style={S.select} value={bankAccountId} onChange={e => setBankAccountId(e.target.value)} disabled={bankAccounts.length === 0}>
+              <option value="">— select —</option>
+              {bankAccounts.map(a => <option key={a.id} value={a.id}>{a.code} — {a.name}</option>)}
+            </select>
+          </div>
+          <div style={{ gridColumn: '1/-1' }}>
+            <label style={S.label}>Reference {method === 'CHEQUE' ? '(cheque #)' : '(optional)'}</label>
+            <input style={S.input} value={reference} onChange={e => setReference(e.target.value)} placeholder={method === 'CHEQUE' ? 'e.g. 1023' : 'Confirmation, memo, etc.'} />
+          </div>
+        </div>
+
+        <div style={{ padding: 10, background: '#f8fafc', borderRadius: 6, fontSize: 12, color: '#475569', marginTop: 12 }}>
+          <strong>Posting:</strong> DR Accounts Payable (2000) ${fmt(parseFloat(amount) || 0)} / CR{' '}
+          {bankAccounts.find(a => a.id === bankAccountId)?.code ?? '(bank)'} ${fmt(parseFloat(amount) || 0)}
+        </div>
+
+        <div style={{ display: 'flex', gap: 8, marginTop: 16, justifyContent: 'flex-end' }}>
+          <button style={S.btn} onClick={onClose}>Cancel</button>
+          <button style={{ ...S.btn, ...S.btnPrimary }} onClick={submit} disabled={submitting || bankAccounts.length === 0}>
+            {submitting ? 'Recording…' : `Pay $${fmt(parseFloat(amount) || 0)}`}
+          </button>
+        </div>
       </div>
     </div>
   )

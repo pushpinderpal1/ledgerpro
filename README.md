@@ -1,161 +1,107 @@
-# LedgerPro — Custom Financial Statement Designer
+# LedgerPro — Hotfix: AP Pay button
 
-Lets users build their own financial statement layouts. Each template is an
-ordered list of lines (HEADER / ACCOUNT / GROUP / SUBTOTAL / SPACER) that gets
-rendered against the entity's posted journal data for any date range.
+## What was broken
 
-This completes the three-feature ask from earlier:
-  ✓ Drill-down to source transaction       (shipped earlier)
-  ✓ Dashboards with KPIs                   (shipped earlier)
-  ✓ Custom financial statement designer    (this bundle)
+Two bugs in the AP module:
 
-## What's in this zip
+1. **Pay button had no `onClick` handler** — it was literally a decorative
+   button. Clicking did nothing.
+2. **The `recordPayment` helper in `src/app/api/ap/route.ts` was an
+   orphan exported function**, not connected to any HTTP method. Even if
+   the button had a click handler, there was no endpoint to call.
+   The old helper also didn't post a journal entry — paying an AP invoice
+   should move cash off the books (DR AP / CR Bank).
 
-- `prisma/schema.prisma` — adds `StatementTemplate` model. Lines stored as
-  JSON for flexibility (no schema churn when line types evolve).
-- `prisma/migrations/0010_statement_templates/migration.sql` — single
-  additive migration. Creates `statement_templates` table.
-- `src/lib/statement-templates/runner.ts` — pure runner logic:
-  - `naturalBalance(rawSigned, type)` — sign convention helper
-  - `runTemplate({ lines, rawByAccount, accountsById })` → `{ rows, grandTotal }`
-  - `validateTemplate(lines)` → error array
-- `src/lib/statement-templates/index.ts` — DB-backed wrapper. Loads only
-  the accounts referenced by the template (not the whole COA) for fast runs.
-- `src/app/api/statement-templates/route.ts` — full CRUD plus
-  `?id=&run=1&from=&to=` to execute and render.
-- `src/app/page.tsx` — replaces existing. Adds sidebar item
-  "Custom Statements" with three views: list, builder, runner.
-- `tests/statement-runner.test.ts` — 18 unit tests on the runner.
+## What this fixes
 
-## Line types
+Two files. No schema change, no migration, no new deps.
 
-| Type     | Description                                         |
-|----------|-----------------------------------------------------|
-| HEADER   | Section title — no value, bold styling              |
-| ACCOUNT  | One account's natural balance for the period        |
-| GROUP    | Sum of multiple accounts' natural balances          |
-| SUBTOTAL | Sum of all ACCOUNT and GROUP lines since previous SUBTOTAL |
-| SPACER   | Blank row for visual separation                     |
+### `src/app/api/ap/route.ts` (replaces existing)
 
-## Sign convention
+- Removes the orphan `recordPayment` helper
+- Adds a proper `PATCH` handler on `/api/ap` that:
+  - Validates: invoice exists, not VOID, not already PAID, amount ≤ outstanding balance
+  - Validates: selected bank account exists, is active, and has `isBankAccount = true`
+  - Validates: AP control account (code "2000") exists in the entity
+  - Creates `ApPayment` record + balanced `JournalEntry` + updates `ApInvoice` (amountPaid + status + paidAt), all in one transaction
+  - Returns `{ success, payment, journalRef, invoice }` on success
+- JE format: ref `APP-YYYY-NNNN`, source "AP", status POSTED
+  - DR Accounts Payable (2000)
+  - CR Selected bank account
 
-The runner shows **natural balances** by default:
-- ASSET / EXPENSE / COGS — debit-positive (raw debit − credit)
-- LIABILITY / EQUITY / REVENUE — credit-positive (raw credit − debit)
+### `src/app/page.tsx` (replaces existing)
 
-This is what an accountant expects: revenue shows positive when there's
-revenue; expenses show positive when there's spend. The `invert` checkbox
-on a line flips the sign for special cases (e.g., showing contra-revenue
-as a negative deduction).
+- Wires the Pay button: `onClick={() => setPayingInvoice(inv)}`
+- Hides the Pay button when invoice status is `PAID` or `VOID`
+- Adds `PayInvoiceModal` component (mounted at bottom of ApPage):
+  - Amount input pre-filled with outstanding balance
+  - Payment date picker
+  - Method dropdown: ACH / Cheque / Wire / Cash / Other
+  - Bank account picker (filtered to `isBankAccount = true` accounts)
+  - Reference / cheque number input
+  - Live preview of the journal entry that will be posted
+  - Submit button shows the amount being paid
+  - Click-outside-to-dismiss + ✕ close button
+- Shows a clear error in the modal if no bank accounts are flagged as such,
+  with instructions to fix it in the Chart of Accounts.
 
-## How to use it
+## How it works after the fix
 
-### Sidebar → Custom Statements → + New template
+1. AP Tracker → click **Pay** on a Pending invoice → modal opens
+2. Amount is pre-filled with the outstanding balance (you can pay partial)
+3. Pick method, bank account, optional reference (cheque # for cheque method)
+4. Click **Pay $X** → API:
+   - Inserts `ApPayment`
+   - Creates JE: DR 2000 / CR Bank Account
+   - Updates invoice: `amountPaid` increases, status flips to
+     `PARTIALLY_PAID` or `PAID` (if balance ≤ 0.5¢)
+5. Toast shows the journal ref (`APP-YYYY-NNNN`)
+6. Modal closes, AP list reloads, invoice shows updated status
 
-1. Give the template a name (e.g. "Management P&L", "Operating Margins by Cost Center")
-2. Add lines using the +Header / +Account / +Group / +Subtotal / +Spacer buttons
-3. For ACCOUNT lines: pick one account from the dropdown
-4. For GROUP lines: click "Pick accounts" → check boxes for any number of accounts
-5. SUBTOTAL automatically sums every ACCOUNT and GROUP line since the previous SUBTOTAL
-6. Reorder with ▲ / ▼ buttons next to each line
-7. Save
+## Prerequisites in your data
 
-### Run a template
+Before the modal can post a payment, the entity needs:
+- At least one account with code **"2000"** (AP control account) — same
+  convention used by the existing AP invoice posting and the new expense
+  request workflow
+- At least one account with **"Is bank account"** ticked (set this on the
+  account in Chart of Accounts → edit → tick the checkbox)
 
-1. Click "Run" next to any template
-2. Pick a date range (presets: today, this/last month, this/last quarter, YTD, this/last year, custom)
-3. Output renders with proper formatting:
-   - Headers in bold with underline
-   - Account rows indented
-   - Subtotals with top border + bold + light background
-   - Grand total at the very end with double border
-4. Export as CSV or Print
-
-### Permissions
-
-- View: anyone with `journals:read` (OWNER, ADMIN, ACCOUNTANT, AUDITOR)
-- Create / Edit / Delete: ACCOUNTANT or higher
-- Run: anyone who can view
-
-## Example template — "Operating Margins"
-
-```
-HEADER    Income
-ACCOUNT   Service Revenue     → account 4000
-ACCOUNT   Product Revenue     → account 4100
-SUBTOTAL  Total revenue                        15,000
-
-SPACER
-
-HEADER    Direct costs
-ACCOUNT   COGS                → account 6000
-ACCOUNT   Materials           → account 6100
-SUBTOTAL  Total direct costs                    3,500
-
-SPACER
-
-HEADER    Operating expenses
-GROUP     Personnel costs     → accounts 5100, 5200, 5300
-GROUP     Facility costs      → accounts 5500, 5600
-SUBTOTAL  Total opex                            4,000
-
-GRAND TOTAL                                     7,500
-```
+If either is missing, the modal returns a clear error explaining what to fix.
 
 ## Deploy
 
 ```
 cd C:\ledgerpro
-# extract the zip, overwriting existing files
+# extract the zip, overwriting the two files
 git add -A
-git commit -m "Custom financial statement designer"
+git commit -m "Hotfix: wire AP Pay button to working payment endpoint with JE posting"
 git push
 ```
 
-Railway runs migration `0010_statement_templates`. No new deps, no env vars.
+After Railway redeploys, hard-refresh and:
 
-## After deploy — verify
-
-1. Sidebar → **Custom Statements** appears
-2. **+ New template** → name it, add a header + 1-2 account lines + a subtotal → Save
-3. Back on list view, click **Run** → output renders with your data
-4. **Export CSV** → file downloads
-5. Try editing the template, reordering lines with ▲/▼, adding a GROUP line
-
-## What's NOT in this bundle (intentional)
-
-- **Conditional/calculated rows** — e.g. "% of revenue" columns. Currently
-  one column of values per template.
-- **Comparison columns** — current period vs prior period vs budget side-by-side.
-  This is doable as a future enhancement.
-- **Drill-down from template rows** — the runner returns `accountIds` per row
-  so drill-down can be wired in later, but UI isn't built yet.
-- **Drag-and-drop reorder** — uses ▲/▼ buttons instead. Drag-drop needs a
-  library; arrows work fine for the typical 10-30 line template.
-- **Template sharing across entities** — each template is entity-scoped.
-  Copying between entities is a future "Clone to entity" feature.
-- **Versioning / approval** — templates are mutable. Edits affect future runs.
-  For change tracking, the AuditLog records create/update/delete actions.
+1. AP Tracker → click **Pay** on the ABC Inc invoice
+2. Modal opens with $1,000.00 pre-filled
+3. Pick a bank account, set method (e.g. ACH)
+4. Click **Pay $1,000.00**
+5. Toast shows the journal ref
+6. Row updates: balance $0, status PAID, no more Pay button on this row
+7. Reports → Trial Balance → AP balance decreased, bank account decreased
+8. Journal Entries → find the new `APP-YYYY-NNNN` entry
 
 ## Tests
 
-166 total tests passing:
-- 18 new in `statement-runner.test.ts` covering:
-  - `naturalBalance` sign conventions per type
-  - Simple P&L with multiple sections and subtotals
-  - GROUP summing multiple accounts
-  - `invert` flag
-  - SUBTOTAL counter resetting between sections
-  - HEADER/SPACER null values
-  - Missing accounts handled silently (return 0)
-  - Drill-down accountIds preserved per row
-  - Lines without subtotal still added to grand total
-  - validateTemplate catches: empty lines, missing accountId, empty accountIds, duplicate ids
-  - validateTemplate passes valid templates and handles SPACER without label
+All 166 tests continue to pass. No new tests added — the payment logic
+lives inside the API route as DB-touching code, which the existing test
+suite doesn't try to mock (consistent with the rest of the codebase).
+The state machine and validations are simple enough that they don't need
+their own unit tests; correctness is verified by deploy + manual test.
 
-## Notes
+## On me
 
-The runner is deliberately decoupled from the database. Given balances and
-account metadata, it produces rendered rows. This makes the math trivially
-testable and reusable for future cases — e.g. running templates against
-budget data instead of actuals would just swap the input map.
+I should have noticed the Pay button had no onClick handler when I built
+the AP module originally. Visual UI elements without handlers slip
+through type-checking because there's no semantic difference between a
+button with and without a click handler at the TypeScript level.
+Going forward I'll grep for orphan UI elements when reviewing modules.
