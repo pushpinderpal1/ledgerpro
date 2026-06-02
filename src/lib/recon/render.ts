@@ -1,5 +1,5 @@
 import ExcelJS from 'exceljs'
-import PDFDocument from 'pdfkit'
+import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from 'pdf-lib'
 import type { ReconReportData } from './report-data'
 
 /**
@@ -208,181 +208,316 @@ export async function renderReconExcel(
 }
 
 // ─── PDF ──────────────────────────────────────────────────────────────────────
+//
+// Implemented with `pdf-lib` (pure JS, zero native deps).
+//
+// pdf-lib coordinates have origin at bottom-left; we maintain a top-down
+// "cursor" (`y`) and convert to PDF coords on each draw via the helper.
+// `cursor` decreases as we go down the page.
+//
+// Standard fonts (Helvetica family + Courier) are 14-font built-in PDF fonts
+// — no font files to ship.
+
+const PAGE_W = 595.28    // A4 width  in points
+const PAGE_H = 841.89    // A4 height in points
+const MARGIN = 40
+const CONTENT_W = PAGE_W - 2 * MARGIN
+
+const COLOR = {
+  text:    rgb(0.06, 0.09, 0.16),    // slate-900
+  muted:   rgb(0.40, 0.45, 0.51),    // slate-500
+  border:  rgb(0.88, 0.91, 0.95),    // slate-200
+  borderStrong: rgb(0.12, 0.16, 0.23), // slate-800
+  green:   rgb(0.09, 0.64, 0.29),    // emerald-600
+  red:     rgb(0.86, 0.15, 0.15),    // red-600
+  amber:   rgb(0.85, 0.47, 0.02),    // amber-600
+  rowAlt:  rgb(0.97, 0.98, 0.99),    // slate-50
+  rowHead: rgb(0.12, 0.16, 0.23),    // slate-800
+  white:   rgb(1, 1, 1),
+}
+
+interface PdfCtx {
+  pdf: PDFDocument
+  page: PDFPage
+  helv: PDFFont
+  helvB: PDFFont
+  helvI: PDFFont
+  courier: PDFFont
+  zapf: PDFFont                  // ZapfDingbats — used for check mark glyph; '\u2713' renders as ✓
+  cursor: number             // current Y from top, in points (we manage top-down)
+}
+
+function newPage(ctx: PdfCtx): PdfCtx {
+  ctx.page = ctx.pdf.addPage([PAGE_W, PAGE_H])
+  ctx.cursor = MARGIN
+  return ctx
+}
+
+function ensureSpace(ctx: PdfCtx, needed: number) {
+  if (ctx.cursor + needed > PAGE_H - MARGIN) newPage(ctx)
+}
+
+// Convert from top-down cursor to pdf-lib bottom-up Y for the BASELINE of text.
+// pdf-lib renders text such that y is the baseline; baseline ≈ top + size * 0.78.
+function baselineY(ctx: PdfCtx, topDownY: number, size: number) {
+  return PAGE_H - topDownY - size * 0.78
+}
+
+function drawText(
+  ctx: PdfCtx,
+  text: string,
+  x: number,
+  size: number,
+  opts: { font?: PDFFont; color?: ReturnType<typeof rgb>; align?: 'left'|'right'|'center'; width?: number; offsetY?: number } = {},
+) {
+  const font = opts.font ?? ctx.helv
+  const color = opts.color ?? COLOR.text
+  const offsetY = opts.offsetY ?? 0
+  const baseY = baselineY(ctx, ctx.cursor + offsetY, size)
+  let dx = x
+  if (opts.align && opts.width != null) {
+    const w = font.widthOfTextAtSize(text, size)
+    if (opts.align === 'right')  dx = x + opts.width - w
+    if (opts.align === 'center') dx = x + (opts.width - w) / 2
+  }
+  ctx.page.drawText(text, { x: dx, y: baseY, size, font, color })
+}
+
+function drawLine(ctx: PdfCtx, x1: number, x2: number, opts: { color?: ReturnType<typeof rgb>; thickness?: number; offsetY?: number } = {}) {
+  const y = PAGE_H - (ctx.cursor + (opts.offsetY ?? 0))
+  ctx.page.drawLine({
+    start: { x: x1, y },
+    end: { x: x2, y },
+    thickness: opts.thickness ?? 0.5,
+    color: opts.color ?? COLOR.border,
+  })
+}
+
+function drawRect(ctx: PdfCtx, x: number, w: number, h: number, color: ReturnType<typeof rgb>) {
+  const y = PAGE_H - (ctx.cursor + h)
+  ctx.page.drawRectangle({ x, y, width: w, height: h, color })
+}
+
+function truncateToWidth(text: string, font: PDFFont, size: number, maxWidth: number): string {
+  if (font.widthOfTextAtSize(text, size) <= maxWidth) return text
+  let lo = 0, hi = text.length
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1
+    const candidate = text.slice(0, mid) + '…'
+    if (font.widthOfTextAtSize(candidate, size) <= maxWidth) lo = mid
+    else hi = mid - 1
+  }
+  return text.slice(0, lo) + '…'
+}
 
 export async function renderReconPdf(
   data: ReconReportData,
   detail: 'detailed' | 'summary',
 ): Promise<Buffer> {
-  return new Promise<Buffer>((resolve, reject) => {
-    try {
-      const doc = new PDFDocument({ size: 'A4', margin: 40, info: {
-        Title: `Bank Reconciliation - ${data.header.accountCode} ${data.header.accountName}`,
-        Author: 'LedgerPro',
-        CreationDate: new Date(),
-      }})
-      const chunks: Buffer[] = []
-      doc.on('data', (c: Buffer) => chunks.push(c))
-      doc.on('end', () => resolve(Buffer.concat(chunks)))
-      doc.on('error', reject)
+  const pdf = await PDFDocument.create()
+  pdf.setTitle(`Bank Reconciliation - ${data.header.accountCode} ${data.header.accountName}`)
+  pdf.setAuthor('LedgerPro')
+  pdf.setCreator('LedgerPro')
 
-      const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right
-      const left = doc.page.margins.left
-      const right = doc.page.width - doc.page.margins.right
+  const ctx: PdfCtx = {
+    pdf,
+    page: pdf.addPage([PAGE_W, PAGE_H]),
+    helv:    await pdf.embedFont(StandardFonts.Helvetica),
+    helvB:   await pdf.embedFont(StandardFonts.HelveticaBold),
+    helvI:   await pdf.embedFont(StandardFonts.HelveticaOblique),
+    courier: await pdf.embedFont(StandardFonts.Courier),
+    zapf:    await pdf.embedFont(StandardFonts.ZapfDingbats),
+    cursor: MARGIN,
+  }
 
-      // ── Header ──
-      doc.font('Helvetica-Bold').fontSize(18).fillColor('#0F172A')
-        .text('Bank Reconciliation Statement', { align: 'center' })
-      doc.moveDown(0.3)
-      doc.font('Helvetica').fontSize(11).fillColor('#64748B')
-        .text(data.header.entityName, { align: 'center' })
-      doc.moveDown(1)
-
-      // 2-column meta
-      const metaTop = doc.y
-      doc.font('Helvetica-Bold').fontSize(10).fillColor('#475569').text('Bank Account', left, metaTop)
-      doc.font('Helvetica').fillColor('#0F172A').text(`${data.header.accountCode} — ${data.header.accountName}`, left, metaTop + 14)
-      doc.font('Helvetica-Bold').fillColor('#475569').text('Statement Date', left + pageWidth / 2, metaTop)
-      doc.font('Helvetica').fillColor('#0F172A').text(data.header.statementDate, left + pageWidth / 2, metaTop + 14)
-
-      const metaRow2 = metaTop + 34
-      doc.font('Helvetica-Bold').fillColor('#475569').text('Status', left, metaRow2)
-      const statusColor = data.header.status === 'COMPLETED' ? '#16A34A' : '#D97706'
-      doc.font('Helvetica-Bold').fillColor(statusColor).text(data.header.status === 'COMPLETED' ? 'Completed' : 'In Progress', left, metaRow2 + 14)
-      doc.font('Helvetica-Bold').fillColor('#475569').text('Generated', left + pageWidth / 2, metaRow2)
-      doc.font('Helvetica').fillColor('#0F172A').text(new Date(data.header.generatedAt).toLocaleString(), left + pageWidth / 2, metaRow2 + 14)
-      doc.y = metaRow2 + 34
-      doc.moveDown(1)
-
-      // Section divider
-      doc.strokeColor('#E2E8F0').lineWidth(1).moveTo(left, doc.y).lineTo(right, doc.y).stroke()
-      doc.moveDown(0.5)
-
-      // ── Reconciliation math ──
-      doc.font('Helvetica-Bold').fontSize(12).fillColor('#0F172A').text('Reconciliation')
-      doc.moveDown(0.3)
-
-      const drawRow = (label: string, value: number, opts: { bold?: boolean; indent?: number; topBorder?: boolean; valueColor?: string } = {}) => {
-        if (opts.topBorder) {
-          doc.strokeColor('#94A3B8').lineWidth(0.5).moveTo(left, doc.y).lineTo(right, doc.y).stroke()
-          doc.moveDown(0.2)
-        }
-        const y = doc.y
-        doc.font(opts.bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(10).fillColor('#0F172A')
-        doc.text(label, left + (opts.indent ? 12 : 0), y, { width: pageWidth * 0.7 })
-        doc.font(opts.bold ? 'Helvetica-Bold' : 'Helvetica').fillColor(opts.valueColor ?? '#0F172A')
-        doc.text(`$${fmt(value)}`, left, y, { width: pageWidth, align: 'right' })
-        doc.y = y
-        doc.moveDown(0.6)
-      }
-
-      drawRow('Beginning balance (per books)', data.summary.beginningBalance)
-      drawRow('Statement ending balance (per bank)', data.summary.statementEnding)
-      drawRow('Cleared balance (in this recon)', data.summary.clearedBalance, { topBorder: true })
-      doc.moveDown(0.3)
-      doc.font('Helvetica-Oblique').fontSize(10).fillColor('#475569').text('Outstanding items')
-      doc.moveDown(0.2)
-      drawRow('Outstanding deposits (uncleared receipts)', data.summary.outstandingDeposits, { indent: 1 })
-      drawRow('Outstanding withdrawals (uncleared payments)', data.summary.outstandingWithdrawals, { indent: 1 })
-      doc.moveDown(0.2)
-      drawRow('Adjusted bank balance', data.summary.adjustedBankBalance, { bold: true, topBorder: true })
-      drawRow('Book balance', data.summary.bookBalance, { bold: true })
-      drawRow('Difference', data.summary.difference, {
-        bold: true, topBorder: true,
-        valueColor: data.summary.isBalanced ? '#16A34A' : '#DC2626',
-      })
-
-      doc.moveDown(0.3)
-      doc.font('Helvetica-Bold').fontSize(11)
-        .fillColor(data.summary.isBalanced ? '#16A34A' : '#DC2626')
-        .text(data.summary.isBalanced ? '✓ Reconciliation is balanced' : '⚠ Out of balance — investigate and correct')
-      doc.moveDown(1)
-
-      // ── Transactions (detailed only) ──
-      if (detail === 'detailed') {
-        // New page if running tight on space
-        if (doc.y > doc.page.height - 200) {
-          doc.addPage()
-        }
-        doc.font('Helvetica-Bold').fontSize(12).fillColor('#0F172A').text(`Transactions (${data.transactions.length})`)
-        doc.moveDown(0.4)
-
-        // Table columns: Date(60), Ref(75), Desc(220), Debit(75), Credit(75), Cleared(70)
-        const cols = [
-          { label: 'Date',         x: left,            w: 60,  align: 'left'  as const },
-          { label: 'Ref',          x: left + 60,       w: 75,  align: 'left'  as const },
-          { label: 'Description',  x: left + 135,      w: 195, align: 'left'  as const },
-          { label: 'Deposit',      x: left + 330,      w: 65,  align: 'right' as const },
-          { label: 'Withdrawal',   x: left + 395,      w: 65,  align: 'right' as const },
-          { label: 'Cleared',      x: left + 460,      w: 55,  align: 'center'as const },
-        ]
-
-        const drawHeader = () => {
-          const y = doc.y
-          doc.rect(left, y, pageWidth, 18).fill('#1E293B')
-          doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(9)
-          for (const c of cols) {
-            doc.text(c.label, c.x + 4, y + 5, { width: c.w - 8, align: c.align })
-          }
-          doc.y = y + 18
-        }
-
-        drawHeader()
-        let rowIdx = 0
-        let totalDeb = 0, totalCr = 0
-        const bottomLimit = doc.page.height - doc.page.margins.bottom - 30
-        for (const t of data.transactions) {
-          if (doc.y > bottomLimit) {
-            doc.addPage()
-            drawHeader()
-          }
-          const y = doc.y
-          if (rowIdx % 2 === 1) {
-            doc.rect(left, y, pageWidth, 16).fill('#F8FAFC')
-          }
-          doc.fillColor('#0F172A').font('Helvetica').fontSize(9)
-          doc.text(t.date,   cols[0].x + 4, y + 4, { width: cols[0].w - 8 })
-          doc.font('Courier').text(t.ref, cols[1].x + 4, y + 4, { width: cols[1].w - 8 })
-          doc.font('Helvetica').text(truncate(t.description, 50), cols[2].x + 4, y + 4, { width: cols[2].w - 8 })
-          if (t.debit > 0)  doc.text(`$${fmt(t.debit)}`,  cols[3].x + 4, y + 4, { width: cols[3].w - 8, align: 'right' })
-          if (t.credit > 0) doc.text(`$${fmt(t.credit)}`, cols[4].x + 4, y + 4, { width: cols[4].w - 8, align: 'right' })
-          // Cleared column
-          const tickStr = t.tick === '✓' && t.clearedDate ? `✓ ${t.clearedDate}` : t.tick
-          if (tickStr) {
-            doc.font('Helvetica-Bold').fontSize(8)
-              .fillColor(t.tick === '✓' ? '#16A34A' : '#D97706')
-              .text(tickStr, cols[5].x + 4, y + 4, { width: cols[5].w - 8, align: 'center' })
-          }
-          totalDeb += t.debit
-          totalCr  += t.credit
-          doc.y = y + 16
-          rowIdx++
-        }
-
-        // Totals row
-        const ty = doc.y
-        doc.strokeColor('#1E293B').lineWidth(1).moveTo(left, ty).lineTo(right, ty).stroke()
-        doc.fillColor('#0F172A').font('Helvetica-Bold').fontSize(9)
-        doc.text('Totals', cols[0].x + 4, ty + 4, { width: cols[0].w - 8 })
-        doc.text(`$${fmt(totalDeb)}`, cols[3].x + 4, ty + 4, { width: cols[3].w - 8, align: 'right' })
-        doc.text(`$${fmt(totalCr)}`,  cols[4].x + 4, ty + 4, { width: cols[4].w - 8, align: 'right' })
-        doc.y = ty + 18
-
-        doc.moveDown(0.5)
-        doc.font('Helvetica-Oblique').fontSize(9).fillColor('#64748B')
-          .text(data.header.status === 'COMPLETED'
-            ? '✓  Cleared in this reconciliation (with clearing date)'
-            : '*  Tentatively cleared (reconciliation still in progress)')
-      }
-
-      doc.end()
-    } catch (e) {
-      reject(e)
-    }
+  // ── Title ──
+  drawText(ctx, 'Bank Reconciliation Statement', MARGIN, 18, {
+    font: ctx.helvB, align: 'center', width: CONTENT_W,
   })
-}
+  ctx.cursor += 24
+  drawText(ctx, data.header.entityName, MARGIN, 11, {
+    color: COLOR.muted, align: 'center', width: CONTENT_W,
+  })
+  ctx.cursor += 24
 
-function truncate(s: string, n: number) {
-  if (!s) return ''
-  if (s.length <= n) return s
-  return s.slice(0, n - 1) + '…'
+  // ── Meta block (2 columns) ──
+  const colL = MARGIN
+  const colR = MARGIN + CONTENT_W / 2
+  const lineH = 16
+
+  drawText(ctx, 'Bank Account',   colL, 9, { font: ctx.helvB, color: COLOR.muted })
+  drawText(ctx, 'Statement Date', colR, 9, { font: ctx.helvB, color: COLOR.muted })
+  ctx.cursor += 12
+  drawText(ctx, `${data.header.accountCode} — ${data.header.accountName}`, colL, 11)
+  drawText(ctx, data.header.statementDate, colR, 11)
+  ctx.cursor += lineH + 4
+
+  drawText(ctx, 'Status',    colL, 9, { font: ctx.helvB, color: COLOR.muted })
+  drawText(ctx, 'Generated', colR, 9, { font: ctx.helvB, color: COLOR.muted })
+  ctx.cursor += 12
+  const statusColor = data.header.status === 'COMPLETED' ? COLOR.green : COLOR.amber
+  drawText(ctx, data.header.status === 'COMPLETED' ? 'Completed' : 'In Progress', colL, 11, {
+    font: ctx.helvB, color: statusColor,
+  })
+  drawText(ctx, new Date(data.header.generatedAt).toLocaleString(), colR, 11)
+  ctx.cursor += lineH + 8
+
+  // ── Divider ──
+  drawLine(ctx, MARGIN, PAGE_W - MARGIN, { color: COLOR.border, thickness: 1 })
+  ctx.cursor += 12
+
+  // ── Reconciliation math ──
+  drawText(ctx, 'Reconciliation', MARGIN, 12, { font: ctx.helvB })
+  ctx.cursor += 18
+
+  const drawSumRow = (label: string, value: number, opts: {
+    bold?: boolean; indent?: number; topBorder?: boolean; valueColor?: ReturnType<typeof rgb>;
+  } = {}) => {
+    if (opts.topBorder) {
+      drawLine(ctx, MARGIN, PAGE_W - MARGIN, { color: COLOR.muted, thickness: 0.4 })
+      ctx.cursor += 4
+    }
+    const lx = MARGIN + (opts.indent ? 14 : 0)
+    drawText(ctx, label, lx, 10, { font: opts.bold ? ctx.helvB : ctx.helv })
+    const v = `$${fmt(value)}`
+    drawText(ctx, v, MARGIN, 10, {
+      font: opts.bold ? ctx.helvB : ctx.helv,
+      color: opts.valueColor ?? COLOR.text,
+      align: 'right', width: CONTENT_W,
+    })
+    ctx.cursor += 16
+  }
+
+  drawSumRow('Beginning balance (per books)',         data.summary.beginningBalance)
+  drawSumRow('Statement ending balance (per bank)',   data.summary.statementEnding)
+  drawSumRow('Cleared balance (in this recon)',       data.summary.clearedBalance, { topBorder: true })
+
+  ctx.cursor += 6
+  drawText(ctx, 'Outstanding items', MARGIN, 10, { font: ctx.helvI, color: COLOR.muted })
+  ctx.cursor += 14
+
+  drawSumRow('Outstanding deposits (uncleared receipts)',    data.summary.outstandingDeposits,    { indent: 1 })
+  drawSumRow('Outstanding withdrawals (uncleared payments)', data.summary.outstandingWithdrawals, { indent: 1 })
+
+  ctx.cursor += 4
+  drawSumRow('Adjusted bank balance', data.summary.adjustedBankBalance, { bold: true, topBorder: true })
+  drawSumRow('Book balance',          data.summary.bookBalance,        { bold: true })
+  drawSumRow('Difference',            data.summary.difference, {
+    bold: true, topBorder: true,
+    valueColor: data.summary.isBalanced ? COLOR.green : COLOR.red,
+  })
+
+  ctx.cursor += 8
+  if (data.summary.isBalanced) {
+    // Use ZapfDingbats '\u2713' (= ✓) for the leading glyph, then Helvetica for the message
+    drawText(ctx, '\u2713', MARGIN, 12, { font: ctx.zapf, color: COLOR.green })
+    const tickW = ctx.zapf.widthOfTextAtSize('\u2713', 12)
+    drawText(ctx, ' Reconciliation is balanced', MARGIN + tickW, 11, { font: ctx.helvB, color: COLOR.green })
+  } else {
+    // ⚠ glyph isn't in WinAnsi or ZapfDingbats — use a bracketed "!" instead
+    drawText(ctx, '[!] Out of balance - investigate and correct', MARGIN, 11, {
+      font: ctx.helvB, color: COLOR.red,
+    })
+  }
+  ctx.cursor += 24
+
+  // ── Transactions (detailed only) ──
+  if (detail === 'detailed') {
+    ensureSpace(ctx, 100)
+    drawText(ctx, `Transactions (${data.transactions.length})`, MARGIN, 12, { font: ctx.helvB })
+    ctx.cursor += 16
+
+    // Columns: Date(60) Ref(75) Desc(195) Deposit(65) Withdrawal(65) Cleared(55)
+    const cols = [
+      { label: 'Date',        x: MARGIN,       w: 60,  align: 'left'   as const },
+      { label: 'Ref',         x: MARGIN + 60,  w: 75,  align: 'left'   as const },
+      { label: 'Description', x: MARGIN + 135, w: 195, align: 'left'   as const },
+      { label: 'Deposit',     x: MARGIN + 330, w: 65,  align: 'right'  as const },
+      { label: 'Withdrawal',  x: MARGIN + 395, w: 65,  align: 'right'  as const },
+      { label: 'Cleared',     x: MARGIN + 460, w: 55,  align: 'center' as const },
+    ]
+
+    const drawTableHeader = () => {
+      drawRect(ctx, MARGIN, CONTENT_W, 18, COLOR.rowHead)
+      for (const c of cols) {
+        drawText(ctx, c.label, c.x + 4, 9, {
+          font: ctx.helvB, color: COLOR.white,
+          align: c.align, width: c.w - 8, offsetY: 5,
+        })
+      }
+      ctx.cursor += 18
+    }
+
+    drawTableHeader()
+
+    let rowIdx = 0
+    let totalDeb = 0, totalCr = 0
+    for (const t of data.transactions) {
+      ensureSpace(ctx, 18)
+      if (ctx.cursor === MARGIN) drawTableHeader()                    // new page
+
+      const rowH = 16
+      if (rowIdx % 2 === 1) drawRect(ctx, MARGIN, CONTENT_W, rowH, COLOR.rowAlt)
+
+      drawText(ctx, t.date, cols[0].x + 4, 9, { width: cols[0].w - 8, offsetY: 4 })
+      drawText(ctx, t.ref,  cols[1].x + 4, 8.5, { font: ctx.courier, width: cols[1].w - 8, offsetY: 4 })
+      drawText(ctx,
+        truncateToWidth(t.description, ctx.helv, 9, cols[2].w - 8),
+        cols[2].x + 4, 9, { width: cols[2].w - 8, offsetY: 4 },
+      )
+      if (t.debit > 0)  drawText(ctx, `$${fmt(t.debit)}`,  cols[3].x + 4, 9, { width: cols[3].w - 8, align: 'right', offsetY: 4 })
+      if (t.credit > 0) drawText(ctx, `$${fmt(t.credit)}`, cols[4].x + 4, 9, { width: cols[4].w - 8, align: 'right', offsetY: 4 })
+      // Cleared column tick: ZapfDingbats '\u2713' (= ✓) + clearedDate when COMPLETED,
+      // plain '*' when IN_PROGRESS, blank when uncleared. We render the tick
+      // glyph in ZapfDingbats and the date in Helvetica side-by-side, centered
+      // in the cell.
+      if (t.tick === '✓') {
+        const dateStr = t.clearedDate ?? ''
+        const tickSize = 9, dateSize = 8
+        const tickW = ctx.zapf.widthOfTextAtSize('\u2713', tickSize)
+        const gap = 3
+        const dateW = dateStr ? ctx.helv.widthOfTextAtSize(dateStr, dateSize) : 0
+        const totalW = tickW + (dateStr ? gap + dateW : 0)
+        const startX = cols[5].x + (cols[5].w - totalW) / 2
+        drawText(ctx, '\u2713', startX, tickSize, { font: ctx.zapf, color: COLOR.green, offsetY: 4 })
+        if (dateStr) {
+          drawText(ctx, dateStr, startX + tickW + gap, dateSize, {
+            font: ctx.helv, color: COLOR.green, offsetY: 5,
+          })
+        }
+      } else if (t.tick === '*') {
+        drawText(ctx, '*', cols[5].x + 4, 11, {
+          font: ctx.helvB, color: COLOR.amber,
+          align: 'center', width: cols[5].w - 8, offsetY: 3,
+        })
+      }
+
+      totalDeb += t.debit
+      totalCr  += t.credit
+      ctx.cursor += rowH
+      rowIdx++
+    }
+
+    // Totals row
+    drawLine(ctx, MARGIN, PAGE_W - MARGIN, { color: COLOR.borderStrong, thickness: 1 })
+    ctx.cursor += 4
+    drawText(ctx, 'Totals',                cols[0].x + 4, 9, { font: ctx.helvB, width: cols[0].w - 8, offsetY: 4 })
+    drawText(ctx, `$${fmt(totalDeb)}`,     cols[3].x + 4, 9, { font: ctx.helvB, width: cols[3].w - 8, align: 'right', offsetY: 4 })
+    drawText(ctx, `$${fmt(totalCr)}`,      cols[4].x + 4, 9, { font: ctx.helvB, width: cols[4].w - 8, align: 'right', offsetY: 4 })
+    ctx.cursor += 20
+
+    if (data.header.status === 'COMPLETED') {
+      // Inline ZapfDingbats '\u2713' (= ✓) followed by an italic Helvetica caption
+      drawText(ctx, '\u2713', MARGIN, 11, { font: ctx.zapf, color: COLOR.green })
+      const w = ctx.zapf.widthOfTextAtSize('\u2713', 11)
+      drawText(ctx, '  Cleared in this reconciliation (with clearing date)',
+        MARGIN + w, 9, { font: ctx.helvI, color: COLOR.muted, offsetY: 2 })
+    } else {
+      drawText(ctx, '*  Tentatively cleared (reconciliation still in progress)',
+        MARGIN, 9, { font: ctx.helvI, color: COLOR.muted })
+    }
+  }
+
+  const bytes = await pdf.save()
+  return Buffer.from(bytes)
 }
