@@ -716,7 +716,10 @@ function AccountsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') =>
 
   const load = useCallback(() => {
     if (!currentEntity) return
-    fetch(`/api/accounts?entityId=${currentEntity.id}&withBalances=1`).then(r => r.json()).then(setAccounts)
+    fetch(`/api/accounts?entityId=${currentEntity.id}&withBalances=1`)
+      .then(r => r.json())
+      .then(d => setAccounts(Array.isArray(d) ? d : []))
+      .catch(() => setAccounts([]))
   }, [currentEntity])
 
   useEffect(() => { load() }, [load])
@@ -892,7 +895,22 @@ function AccountsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') =>
               </label>
             </div>
             <div>
-              <label style={S.label}>Opening Balance</label>
+              <label style={{ ...S.label, display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span>Opening Balance</span>
+                {(() => {
+                  const isDr = ['ASSET','EXPENSE','COGS'].includes(form.type)
+                  return (
+                    <span style={{
+                      padding: '2px 8px', borderRadius: 4, fontSize: 10, fontWeight: 700,
+                      letterSpacing: 0.04,
+                      background: isDr ? '#dbeafe' : '#fce7f3',
+                      color:      isDr ? '#1d4ed8' : '#9d174d',
+                    }}>
+                      + = {isDr ? 'DR' : 'CR'}  (natural for {form.type})
+                    </span>
+                  )
+                })()}
+              </label>
               <input
                 style={S.input}
                 value={form.openingBalance}
@@ -900,9 +918,11 @@ function AccountsPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') =>
                 placeholder="0.00"
                 inputMode="decimal"
               />
-              <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>
-                Enter a positive number on the account&apos;s natural side ({['ASSET','EXPENSE','COGS'].includes(form.type) ? 'DR' : 'CR'} for {form.type}).
-                A balanced journal entry will be auto-posted on the entity&apos;s opening date with the contra to <em>Opening Balance Equity</em> (account 3999).
+              <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4, lineHeight: 1.45 }}>
+                Enter a positive number for a balance on the account&apos;s natural side.
+                Enter a negative number for the rare reverse case (e.g. an ASSET with a CR balance).
+                A balanced journal entry will auto-post on the entity&apos;s opening date with the
+                contra to <em>Opening Balance Equity</em> (account 3999).
               </div>
             </div>
           </div>

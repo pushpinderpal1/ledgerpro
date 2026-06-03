@@ -38,32 +38,49 @@ export async function GET(req: NextRequest) {
     const { _count, ...rest } = a
     return {
       ...rest,
-      openingBalance: Number(rest.openingBalance),
+      openingBalance: Number(rest.openingBalance ?? 0),
       usageCount: _count.journalLines,
     }
   })
 
-  if (sp.get('withBalances') === '1') {
-    const rows = await db.journalLine.groupBy({
-      by: ['accountId'],
-      where: { journalEntry: { entityId, status: 'POSTED' } },
-      _sum: { debit: true, credit: true },
+  if (sp.get('withBalances') !== '1') {
+    return NextResponse.json(flat)
+  }
+
+  // Compute current balance per account from posted JE lines.
+  // Two-step to avoid Prisma groupBy + relation-filter compatibility quirks:
+  //   1. Get POSTED journal entry IDs for this entity
+  //   2. Sum debit/credit on journal_lines filtered by those JE IDs
+  // Failure to compute balances should NOT prevent COA from rendering —
+  // we degrade gracefully to currentBalance = 0 for every account.
+  try {
+    const postedJes = await db.journalEntry.findMany({
+      where: { entityId, status: 'POSTED' },
+      select: { id: true },
     })
+    const jeIds = postedJes.map(j => j.id)
     const balanceMap = new Map<string, number>()
-    for (const r of rows) {
-      const dr = Number(r._sum.debit ?? 0)
-      const cr = Number(r._sum.credit ?? 0)
-      balanceMap.set(r.accountId, dr - cr)
+    if (jeIds.length > 0) {
+      const rows = await db.journalLine.groupBy({
+        by: ['accountId'],
+        where: { journalEntryId: { in: jeIds } },
+        _sum: { debit: true, credit: true },
+      })
+      for (const r of rows) {
+        const dr = Number(r._sum.debit ?? 0)
+        const cr = Number(r._sum.credit ?? 0)
+        balanceMap.set(r.accountId, dr - cr)
+      }
     }
     return NextResponse.json(flat.map(a => ({
       ...a,
-      // Signed: positive = DR balance, negative = CR balance.
-      // Includes the auto-posted opening-balance JE.
       currentBalance: balanceMap.get(a.id) ?? 0,
     })))
+  } catch (e) {
+    console.error('[accounts GET] balance computation failed', e)
+    // Degrade: still return the account list so the COA page renders.
+    return NextResponse.json(flat.map(a => ({ ...a, currentBalance: 0, balanceError: true })))
   }
-
-  return NextResponse.json(flat)
 }
 
 const createSchema = z.object({
