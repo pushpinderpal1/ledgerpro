@@ -23,11 +23,17 @@ const createSchema = z.object({
   filename: z.string().min(1).max(200),
   mimeType: z.string().min(1).max(120),
   dataBase64: z.string().min(1),
+  vendorId:  z.string().optional(),                // when set, attaches to a Vendor (e.g. contract upload)
 })
+
+// Helper: pick the right write permission depending on what the attachment is for.
+function writePermFor(body: { vendorId?: string }) {
+  return body.vendorId ? 'vendors:write' as const : 'ap-request:submit' as const
+}
 
 export async function POST(req: NextRequest) {
   const body = await req.json()
-  const auth = await requireEntityAccess(req, body.entityId, 'ap-request:submit')
+  const auth = await requireEntityAccess(req, body.entityId, writePermFor(body))
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   try {
@@ -44,6 +50,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: `File too large (${buf.length} bytes; max ${MAX_BYTES})` }, { status: 413 })
     }
 
+    // If vendorId given, validate it belongs to this entity
+    if (data.vendorId) {
+      const ok = await db.vendor.findFirst({ where: { id: data.vendorId, entityId: data.entityId }, select: { id: true } })
+      if (!ok) return NextResponse.json({ error: 'Vendor not found in this entity' }, { status: 400 })
+    }
+
     const created = await db.attachment.create({
       data: {
         entityId: data.entityId,
@@ -52,8 +64,9 @@ export async function POST(req: NextRequest) {
         size: buf.length,
         data: buf,
         uploadedBy: auth.session?.userId,
+        vendorId: data.vendorId ?? null,
       },
-      select: { id: true, filename: true, mimeType: true, size: true, createdAt: true },
+      select: { id: true, filename: true, mimeType: true, size: true, createdAt: true, vendorId: true },
     })
     await logAudit({
       entityId: data.entityId, userId: auth.session?.userId,
@@ -74,25 +87,33 @@ export async function GET(req: NextRequest) {
   const id = sp.get('id')
   if (!entityId || !id) return NextResponse.json({ error: 'entityId, id required' }, { status: 400 })
 
-  const auth = await requireEntityAccess(req, entityId, 'ap:read')
+  // First peek at the attachment to decide which read permission to require.
+  const peek = await db.attachment.findFirst({
+    where: { id, entityId },
+    select: { id: true, vendorId: true },
+  })
+  if (!peek) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+
+  const readPerm = peek.vendorId ? 'vendors:read' as const : 'ap:read' as const
+  const auth = await requireEntityAccess(req, entityId, readPerm)
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   const meta = sp.get('meta') === '1'
   const att = await db.attachment.findFirst({
     where: { id, entityId },
     select: meta
-      ? { id: true, filename: true, mimeType: true, size: true, createdAt: true }
-      : { id: true, filename: true, mimeType: true, size: true, data: true, createdAt: true },
+      ? { id: true, filename: true, mimeType: true, size: true, createdAt: true, vendorId: true }
+      : { id: true, filename: true, mimeType: true, size: true, data: true, createdAt: true, vendorId: true },
   })
   if (!att) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
   if (meta) return NextResponse.json(att)
 
-  // Stream the actual bytes as base64 in JSON for easy client display.
   const dataBase64 = (att as { data: Buffer }).data.toString('base64')
   return NextResponse.json({
     id: att.id, filename: att.filename, mimeType: att.mimeType, size: att.size,
     dataBase64,
+    vendorId: att.vendorId,
     createdAt: att.createdAt,
   })
 }
@@ -103,10 +124,17 @@ export async function DELETE(req: NextRequest) {
   const id = sp.get('id')
   if (!entityId || !id) return NextResponse.json({ error: 'entityId, id required' }, { status: 400 })
 
-  const auth = await requireEntityAccess(req, entityId, 'ap-request:submit')
+  const peek = await db.attachment.findFirst({
+    where: { id, entityId },
+    select: { id: true, vendorId: true },
+  })
+  if (!peek) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+
+  const writePerm = peek.vendorId ? 'vendors:write' as const : 'ap-request:submit' as const
+  const auth = await requireEntityAccess(req, entityId, writePerm)
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
-  // Refuse to delete if any ApRequest references this attachment.
+  // Refuse to delete if any ApRequest references this attachment (legacy behavior).
   const refs = await db.apRequest.count({ where: { attachmentId: id, entityId } })
   if (refs > 0) {
     return NextResponse.json({ error: `Attachment is referenced by ${refs} request(s)` }, { status: 409 })

@@ -64,6 +64,7 @@ model LegalEntity {
   statementTemplates StatementTemplate[]
   paymentModes   PaymentMode[]
   receipts       Receipt[]
+  vendors        Vendor[]
 
   @@map("legal_entities")
 }
@@ -191,6 +192,8 @@ model Account {
   apRequests   ApRequest[]  @relation("ApRequestAccount")
   receiptDeposits Receipt[] @relation("ReceiptDepositAccount")
   receiptCredits  Receipt[] @relation("ReceiptCreditAccount")
+  vendorsAsDefault     Vendor[]        @relation("VendorDefaultAccount")
+  vendorServicesAsDefault VendorService[] @relation("VendorServiceDefaultAccount")
   budgetLines  BudgetLine[]
   paymentsFrom Payment[]            @relation("PaymentBankAccount")
   reconciliations BankReconciliation[]
@@ -312,7 +315,8 @@ model ApInvoice {
   entityId    String
   clientId    String?
   accountId   String?
-  vendor      String
+  vendor      String                                  // free-text vendor name (legacy + when vendor master not used)
+  vendorId    String?                                 // FK to Vendor master when selected from dropdown
   invoiceNo   String
   invoiceDate DateTime
   dueDate     DateTime
@@ -325,11 +329,12 @@ model ApInvoice {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  entity   LegalEntity @relation(fields: [entityId], references: [id], onDelete: Cascade)
-  client   Client?     @relation(fields: [clientId], references: [id], onDelete: SetNull)
-  account  Account?    @relation(fields: [accountId], references: [id], onDelete: SetNull)
-  payments ApPayment[]
-  apRequest ApRequest? @relation("ApRequestInvoice")
+  entity        LegalEntity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  client        Client?     @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  account       Account?    @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  vendorMaster  Vendor?     @relation(fields: [vendorId], references: [id], onDelete: SetNull)
+  payments      ApPayment[]
+  apRequest     ApRequest?  @relation("ApRequestInvoice")
 
   @@map("ap_invoices")
 }
@@ -875,12 +880,15 @@ model Attachment {
   size       Int                                     // bytes
   data       Bytes                                   // file content
   uploadedBy String?                                 // userId (no FK to avoid User-relation explosion)
+  vendorId   String?                                 // optional FK when this attachment belongs to a Vendor
   createdAt  DateTime    @default(now())
 
   entity     LegalEntity @relation(fields: [entityId], references: [id], onDelete: Cascade)
   apRequests ApRequest[]
+  vendor     Vendor?     @relation(fields: [vendorId], references: [id], onDelete: Cascade)
 
   @@index([entityId])
+  @@index([vendorId])
   @@map("attachments")
 }
 
@@ -1053,4 +1061,128 @@ model Receipt {
   @@index([entityId, status])
   @@index([entityId, receiptDate])
   @@map("receipts")
+}
+
+// ─── VENDOR MASTER ────────────────────────────────────────────────────────────
+// Captures vendor details (QuickBooks-style), with maker-checker approval
+// workflow. Only APPROVED vendors are usable for invoice booking.
+//
+// State machine (see src/lib/vendor/state.ts for the canonical implementation):
+//
+//   [new]         → PENDING_APPROVAL  (submit on create)
+//   PENDING       → APPROVED          (approver clicks Approve)
+//   PENDING       → REJECTED          (approver clicks Reject with reason)
+//   REJECTED      → PENDING_APPROVAL  (after editor fixes + resubmits)
+//   APPROVED      → INACTIVE          (archive)
+//   INACTIVE      → APPROVED          (reactivate)
+//
+// Same-user-cannot-approve-own is enforced at the API layer.
+
+enum VendorStatus {
+  PENDING_APPROVAL
+  APPROVED
+  REJECTED
+  INACTIVE
+}
+
+enum VendorFrequency {
+  ON_DEMAND
+  DAILY
+  WEEKLY
+  MONTHLY
+  QUARTERLY
+  SEMI_ANNUAL
+  ANNUAL
+  STATUTORY                            // statutory filings / regulated payments
+  ONE_TIME
+  OTHER
+}
+
+model Vendor {
+  id              String       @id @default(cuid())
+  entityId        String
+  vendorNumber    String?                              // optional vendor code; auto-numbered V-NNNN when blank
+
+  // Identity
+  legalName       String                               // legal company name (required)
+  displayName     String?                              // short / DBA name for UI
+  contactPerson   String?
+
+  // Contact
+  email           String?
+  phone           String?
+  website         String?
+
+  // Address
+  addressLine1    String?
+  addressLine2    String?
+  city            String?
+  state           String?
+  postalCode      String?
+  country         String?
+
+  // Tax & compliance
+  taxId           String?                              // EIN / GST / PAN / VAT
+  taxIdType       String?                              // "EIN", "GST", "VAT", "PAN", etc.
+  is1099Vendor    Boolean      @default(false)         // US 1099 reporting flag
+  taxResidency    String?                              // country code, for cross-border
+
+  // Financial
+  paymentTerms    String?                              // "Net 30", "Net 45", "Due on Receipt"
+  currency        String       @default("USD")
+  creditLimit     Decimal?     @db.Decimal(18, 2)
+  defaultAccountId String?                             // default expense GL when booking invoices
+
+  // Bank info for ACH / wire (plaintext for v1; encrypt in a future hardening pass)
+  bankName        String?
+  bankAccountName String?
+  bankAccountNumber String?
+  bankRoutingNumber String?
+  bankSwiftBic    String?
+  bankIban        String?
+
+  // Workflow
+  status          VendorStatus @default(PENDING_APPROVAL)
+  submittedBy     String?
+  submittedAt     DateTime     @default(now())
+  approvedBy      String?
+  approvedAt      DateTime?
+  rejectedBy      String?
+  rejectedAt      DateTime?
+  rejectionReason String?
+
+  notes           String?
+
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  entity          LegalEntity     @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  defaultAccount  Account?        @relation("VendorDefaultAccount", fields: [defaultAccountId], references: [id], onDelete: SetNull)
+  services        VendorService[]
+  attachments     Attachment[]
+  apInvoices      ApInvoice[]
+
+  @@unique([entityId, vendorNumber])
+  @@index([entityId, status])
+  @@index([entityId, legalName])
+  @@map("vendors")
+}
+
+model VendorService {
+  id              String          @id @default(cuid())
+  vendorId        String
+  serviceName     String                                // description of service
+  frequency       VendorFrequency
+  defaultAccountId String?                              // GL account for this service line
+  estimatedAmount Decimal?        @db.Decimal(18, 2)
+  notes           String?
+  isActive        Boolean         @default(true)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  vendor          Vendor          @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  defaultAccount  Account?        @relation("VendorServiceDefaultAccount", fields: [defaultAccountId], references: [id], onDelete: SetNull)
+
+  @@index([vendorId])
+  @@map("vendor_services")
 }

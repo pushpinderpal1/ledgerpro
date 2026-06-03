@@ -1,109 +1,196 @@
-# LedgerPro — Hotfix: COA accounts not showing + DR/CR indicator
+# Vendor Master + Approval Workflow
 
-## Two fixes in this bundle
+Adds a full vendor master to the AP module with QuickBooks-style detail capture,
+contract/document upload, service catalog with frequency, and a maker-checker
+approval workflow. Approved vendors automatically appear in the AP invoice
+booking dropdown.
 
-### 1. COA was returning an empty list — root cause
+---
 
-The new `?withBalances=1` parameter triggered a Prisma `groupBy` query
-that filtered journal lines using a **relation filter**:
+## What's in this bundle
 
-```ts
-db.journalLine.groupBy({
-  by: ['accountId'],
-  where: { journalEntry: { entityId, status: 'POSTED' } },  // ← relation filter
-  _sum: { debit: true, credit: true },
-})
-```
+### Schema (`prisma/schema.prisma`)
 
-Prisma's `groupBy` has known quirks with relation-based `where` clauses
-across some versions; in your deployment this query likely errored out,
-causing the API to return an error response. The UI then tried to call
-`.map(...)` on a non-array and silently rendered nothing.
+Two new models + two new enums:
 
-The Trial Balance kept working because it uses different queries that
-don't rely on this pattern — confirming the underlying data is fine.
+- **`Vendor`** — identity, contact, address, tax, financial, bank details, and
+  workflow status. Includes a `defaultAccountId` FK so AP can preset the expense
+  GL when booking invoices.
+- **`VendorService`** — service catalog tied to a vendor: name, frequency,
+  optional default GL account, estimated amount.
+- **`enum VendorStatus`** — `PENDING_APPROVAL | APPROVED | REJECTED | INACTIVE`
+- **`enum VendorFrequency`** — `ON_DEMAND | DAILY | WEEKLY | MONTHLY | QUARTERLY | SEMI_ANNUAL | ANNUAL | STATUTORY | ONE_TIME | OTHER`
 
-**Fix (two parts, defense in depth):**
+Modifications to existing models:
 
-In `src/app/api/accounts/route.ts`:
-- Refactored balance computation to a safer **two-step query**: first
-  fetch posted JE IDs, then group journal_lines by `{ in: jeIds }`. This
-  is a flat where-filter that all Prisma versions handle reliably.
-- Wrapped balance computation in `try/catch` so any failure degrades
-  gracefully (returns accounts with `currentBalance: 0 + balanceError: true`
-  rather than blowing up the response).
+- **`ApInvoice`** — adds nullable `vendorId` FK (legacy free-text `vendor` field stays for back-compat).
+- **`Attachment`** — adds nullable `vendorId` FK so contracts and other documents can be hung off a vendor (the existing many-to-many to `ApRequest` is untouched).
+- **`Account`** — adds back-relations `vendorsAsDefault` and `vendorServicesAsDefault`.
+- **`LegalEntity`** — adds back-relation `vendors`.
 
-In `src/app/page.tsx`:
-- Added `Array.isArray` guard on the accounts fetch so a malformed
-  response can never crash the table rendering:
-  ```ts
-  .then(d => setAccounts(Array.isArray(d) ? d : []))
-  .catch(() => setAccounts([]))
-  ```
+### Migration (`prisma/migrations/0013_vendor_master/migration.sql`)
 
-### 2. DR/CR indicator next to "Opening Balance"
+92 lines. Creates the two enums, two tables (`vendors`, `vendor_services`), two
+`ALTER TABLE`s (adds `vendorId` to `ap_invoices` and `attachments`), and five FK
+constraints. Idempotent against the rest of your schema.
 
-Per your request — a clear visual badge that shows the natural side for
-the account's selected type, right next to the label:
+Railway will run this automatically on the next deploy.
+
+### State machine (`src/lib/vendor/state.ts`)
+
+Pure logic, no DB. Used by `/api/vendors` for the workflow transitions:
 
 ```
-Opening Balance  [+ = DR (natural for ASSET)]
+[new]            → PENDING_APPROVAL   (submit on create)
+PENDING          → APPROVED           (action: 'approve')
+PENDING          → REJECTED           (action: 'reject', reason required)
+REJECTED         → PENDING_APPROVAL   (action: 'resubmit')
+APPROVED         → INACTIVE           (action: 'archive')
+INACTIVE         → APPROVED           (action: 'reactivate')
 ```
 
-The badge color and text update dynamically as you change the Account
-Type dropdown:
+Same-user-cannot-approve-own is enforced via `canActUpon` — only blocks
+`approve` and `reject`, not the other actions (so an AP_CLERK can still
+resubmit a vendor they themselves submitted and got rejected).
 
-- **Blue badge** `+ = DR (natural for ASSET / EXPENSE / COGS)`
-- **Pink badge** `+ = CR (natural for LIABILITY / EQUITY / REVENUE)`
+Reject without a non-empty `reason` is rejected with `code: 'reason_required'`.
 
-So when the user is looking at the input, they instantly know:
-- Asset / Expense / COGS → typing `5000` means $5,000 DR
-- Liability / Equity / Revenue → typing `5000` means $5,000 CR
-- A negative number flips sides (rare reverse case)
+### Tests (`tests/vendor-workflow.test.ts`)
 
-The fine-print help text below the input is preserved and clarified.
+14 tests covering: every valid transition, every invalid transition, reason
+validation (incl. whitespace-only), self-approve block on both approve/reject,
+self-resubmit allowed, frequency display mapping.
 
-## What's in this zip
+Run with `npm test` — combined with prior suites you should see **200 passing**.
 
-Two files. No schema change, no migration, no new dependencies.
+### Permissions (`src/lib/auth/index.ts`)
 
-- `src/app/api/accounts/route.ts` — safer balance query + graceful degradation
-- `src/app/page.tsx` — defensive fetch + DR/CR badge next to Opening Balance
+Three new keys, role-hierarchy based:
+
+- `vendors:read`    → AUDITOR+ (CLIENT_VIEW is below this)
+- `vendors:write`   → AP_CLERK+ (create vendors, add/edit/remove services, upload documents)
+- `vendors:approve` → ACCOUNTANT+ (approve / reject / archive / reactivate)
+
+### APIs
+
+**`/api/vendors`** (`src/app/api/vendors/route.ts`)
+
+- `GET    ?entityId=&status=&q=` — list with optional status + free-text search; includes status-count summary for tab badges.
+- `GET    ?entityId=&id=`         — full detail (services + attachments metadata + invoice count).
+- `POST   { entityId, ...fields }` — create. Status auto-set to `PENDING_APPROVAL`. Auto-numbers `V-NNNN` if `vendorNumber` blank. Validates `defaultAccountId` belongs to the entity.
+- `POST   { entityId, id, transition, reason? }` — workflow action. Detected by the `transition` key in the body.
+- `PATCH  { entityId, id, ...fields }` — edit. Blocked on INACTIVE vendors (reactivate first). PENDING/REJECTED/APPROVED all editable; changes are audit-logged.
+- `DELETE ?entityId=&id=` — archives (sets INACTIVE) when invoices reference it; otherwise hard-deletes. Requires `vendors:approve`.
+
+**`/api/vendor-services`** (`src/app/api/vendor-services/route.ts`)
+
+Standard CRUD scoped to vendor + entity. Validates `defaultAccountId` belongs to the entity. `PATCH` supports toggling `isActive` for soft-disable.
+
+**`/api/attachments`** (`src/app/api/attachments/route.ts`) — extended
+
+- `POST` now accepts optional `vendorId`. If present, permission check switches from `ap-request:submit` → `vendors:write` and the attachment is linked to the vendor (cascade-delete on vendor delete).
+- `GET` and `DELETE` peek at `attachment.vendorId` to pick the right read/write permission. Attachments without a `vendorId` continue to use the AP request permissions as before. No breaking change for existing AP attachments.
+
+**`/api/ap`** (`src/app/api/ap/route.ts`) — extended
+
+- `POST` now accepts optional `vendorId`. If provided, the route checks that the vendor (a) belongs to the entity and (b) is **APPROVED**. Anything else is rejected with 409. The legacy `vendor` free-text field still works for one-off vendors not in the master.
+
+### UI (`src/app/page.tsx`)
+
+A new sidebar entry — **🏢 Vendor Master** under the Payables group, above
+"AP Tracker". Mounts a new page with three modes:
+
+1. **List view** — KPI tiles for each status, filter tabs (`All` / `Pending Approval` / `Approved` / `Rejected` / `Inactive`) with badge counts, free-text search across name/number/tax-ID/email, and a sortable table. Click any row to open the detail view.
+2. **Create form** — five sections (Identity, Address, Tax & Compliance, Financial, Bank Details), with a "Submit for Approval" CTA. A yellow banner reminds the user that the vendor will go through approval before being usable.
+3. **Detail view** — header with vendor name + status badge + role-aware action buttons (Approve / Reject / Edit / Resubmit / Archive / Reactivate), and three tabs:
+   - **Details** — read-only grid of all captured fields.
+   - **Services** — add / edit / remove / toggle-active. Frequency dropdown shows all 10 enum values. Each service can have its own default GL account and estimated amount.
+   - **Documents** — file picker (max 5 MB) for uploading contracts, NDAs, SOWs, etc. Each document gets a Download and a Delete button (Delete requires `vendors:write`).
+
+**AP invoice form integration** — when a user opens "+ Add invoice" in the AP
+Tracker, the form now shows an "Approved Vendors" dropdown at the top. Picking
+a vendor auto-fills the free-text vendor name (still editable for one-off
+overrides). A yellow info banner appears if no approved vendors exist yet,
+pointing the user to Vendor Master.
+
+---
+
+## Roles in practice
+
+| Role         | Can browse vendors | Can create / edit | Can approve / reject |
+| ------------ | ------------------ | ----------------- | -------------------- |
+| OWNER        | ✓                  | ✓                 | ✓                    |
+| ADMIN        | ✓                  | ✓                 | ✓                    |
+| ACCOUNTANT   | ✓                  | ✓                 | ✓ (but not own)      |
+| AP_CLERK     | ✓                  | ✓                 | —                    |
+| AUDITOR      | ✓ (read-only)      | —                 | —                    |
+| CLIENT_VIEW  | —                  | —                 | —                    |
+
+The maker-checker invariant — "same user can't approve a vendor they
+submitted" — is enforced at the API layer using the `canActUpon` helper. The
+DB stores `submittedBy` on every submit / resubmit, so the check works even
+across long gaps.
+
+---
 
 ## Deploy
 
-```
+```bat
 cd C:\ledgerpro
-git add -A
-git commit -m "Hotfix: COA accounts not showing + DR/CR indicator on Opening Balance"
-git push
+git add .
+git commit -m "Vendor Master with approval workflow"
+git push origin main
 ```
 
-After Railway redeploys (no migration this time, just a code update):
+Railway will:
 
-1. Books → Chart of Accounts — your existing accounts should now appear
-   with Opening Balance and Current Balance columns
-2. Click **Edit** on any account — the "Opening Balance" label now has a
-   colored DR/CR badge that updates as you change the Account Type
+1. Run `prisma migrate deploy` → applies `0013_vendor_master`.
+2. Build Next.js.
+3. Restart the server.
 
-## Why my smoke tests didn't catch this
+After deploy, hard-refresh in the browser (Ctrl+Shift+R) to pick up the new
+sidebar entry and component.
 
-I tested the pure logic (13 unit tests, all pass) and the CSV parsing
-(5 scenarios verified). The Prisma `groupBy` runtime behavior can only
-be properly tested against a real Postgres database with the Prisma
-engine generated — neither is available in my sandbox. The defensive
-two-step refactor is the lesson for next time: when a Prisma operation
-involves a relation filter inside `groupBy`, do the relation lookup
-separately to avoid version-specific quirks.
+---
 
-## Verify after deploy
+## Quick walkthrough
 
-1. COA page should list all your previously-created accounts
-2. Current Balance column shows live values (matches TB)
-3. Edit any account — DR/CR badge appears next to "Opening Balance":
-   - Toggle account type to LIABILITY → badge becomes pink "+ = CR"
-   - Toggle back to ASSET → badge becomes blue "+ = DR"
+1. **Sign in as an AP_CLERK** (or higher). Open **Payables → Vendor Master**.
+2. Click **+ New Vendor**. Fill in at least the legal name. Hit **Submit for Approval**.
+3. The vendor now shows up in the **Pending Approval** tab with status `PENDING_APPROVAL`.
+4. **Sign in as an ACCOUNTANT** (must be a different user — same-user-can't-approve-own is enforced).
+5. Open Vendor Master, click the pending vendor, review the details, then click **Approve**.
+6. Switch tabs to **Approved**. Open the vendor, go to the **Services** tab, click **+ Add Service**, fill in (e.g.) "Monthly bookkeeping" with frequency **Monthly**, optional estimated amount, and a default GL account. Save.
+7. Go to the **Documents** tab, upload the contract PDF.
+8. Open **Payables → AP Tracker**, click **+ Add invoice**. The newly approved vendor is in the dropdown — pick it, and the vendor name auto-fills.
 
-## Tests
+---
 
-All 186 tests still pass.
+## Scope cuts (consider for v2)
+
+- **No email notifications.** Approvers find pending vendors by visiting the Pending tab. Easy to add via the existing audit log + Sentry hooks later.
+- **No edit-as-new-version for APPROVED vendors.** Today APPROVED vendors can be edited directly with an audit log entry — no re-approval cycle. SAP-style "all edits require re-approval" is a future hardening pass.
+- **Bank info stored as plaintext.** Account numbers, routing, IBAN, etc. are not encrypted at rest. They're access-controlled via `vendors:read`, but for compliance-sensitive deployments wrap with AES-256-GCM the same way 2FA secrets are (`ENCRYPTION_KEY` env var is already set up).
+- **No vendor portal.** Vendors can't self-serve onboarding — everything goes through internal users. This is intentional for a finance-grade workflow.
+- **Document versioning.** Uploading a new contract doesn't supersede an old one — both stay in the list. Add a tag/category system if multi-version contract tracking is needed.
+- **No dedicated "Vendor Approvals" view.** The Pending Approval tab inside Vendor Master is the queue. A separate top-level "Approvals" inbox aggregating vendors + expense requests is a natural Phase 2.
+
+---
+
+## Files touched
+
+| File                                                | Change   |
+| --------------------------------------------------- | -------- |
+| `prisma/schema.prisma`                              | modified |
+| `prisma/migrations/0013_vendor_master/migration.sql`| new      |
+| `src/lib/vendor/state.ts`                           | new      |
+| `src/lib/auth/index.ts`                             | modified |
+| `src/app/api/vendors/route.ts`                      | new      |
+| `src/app/api/vendor-services/route.ts`              | new      |
+| `src/app/api/attachments/route.ts`                  | modified |
+| `src/app/api/ap/route.ts`                           | modified |
+| `src/app/page.tsx`                                  | modified |
+| `tests/vendor-workflow.test.ts`                     | new      |
+
+No new npm dependencies — uses what's already in the project (Zod, Prisma,
+React, etc.).

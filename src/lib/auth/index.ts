@@ -129,6 +129,9 @@ export const MODULE_PERMISSIONS: Record<string, EntityRole> = {
   'receipts:write':  'ACCOUNTANT',
   'payment-modes:read':  'ACCOUNTANT',
   'payment-modes:write': 'ADMIN',
+  'vendors:read':    'AUDITOR',
+  'vendors:write':   'AP_CLERK',           // create + edit pending vendors
+  'vendors:approve': 'ACCOUNTANT',         // approve / reject / archive / reactivate
   'assets:read':     'AUDITOR',
   'assets:write':    'ACCOUNTANT',
   'payroll:read':    'PAYROLL_CLERK',

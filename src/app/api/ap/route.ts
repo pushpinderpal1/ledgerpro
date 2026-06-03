@@ -5,6 +5,7 @@ import { requireEntityAccess } from '@/lib/auth'
 
 const invoiceSchema = z.object({
   vendor: z.string().min(1),
+  vendorId: z.string().optional(),                    // optional FK to Vendor master (must be APPROVED)
   invoiceNo: z.string().min(1),
   invoiceDate: z.string(),
   dueDate: z.string(),
@@ -80,10 +81,24 @@ export async function POST(req: NextRequest) {
   try {
     const data = invoiceSchema.parse(invoiceData)
 
+    // If vendorId provided, confirm it belongs to this entity AND is APPROVED.
+    // Anything else is rejected so unapproved/inactive vendors can't sneak in.
+    if (data.vendorId) {
+      const v = await db.vendor.findFirst({
+        where: { id: data.vendorId, entityId },
+        select: { id: true, status: true, legalName: true },
+      })
+      if (!v) return NextResponse.json({ error: 'Vendor not found in this entity' }, { status: 400 })
+      if (v.status !== 'APPROVED') {
+        return NextResponse.json({ error: `Vendor "${v.legalName}" is ${v.status.toLowerCase().replace('_', ' ')}; only APPROVED vendors can be booked` }, { status: 409 })
+      }
+    }
+
     const invoice = await db.apInvoice.create({
       data: {
         entityId,
         vendor: data.vendor,
+        vendorId: data.vendorId ?? null,
         invoiceNo: data.invoiceNo,
         invoiceDate: new Date(data.invoiceDate),
         dueDate: new Date(data.dueDate),

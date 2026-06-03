@@ -37,6 +37,7 @@ const MODULE_ACCESS: Record<string, string[]> = {
   budget:     ['OWNER','ADMIN','ACCOUNTANT','AUDITOR','CLIENT_VIEW'],
   ap:         ['OWNER','ADMIN','ACCOUNTANT','AP_CLERK'],
   'ap-requests': ['OWNER','ADMIN','ACCOUNTANT','AP_CLERK','AUDITOR'],
+  vendors:    ['OWNER','ADMIN','ACCOUNTANT','AP_CLERK','AUDITOR'],
   payments:   ['OWNER','ADMIN','ACCOUNTANT','AP_CLERK'],
   receipts:   ['OWNER','ADMIN','ACCOUNTANT','AUDITOR'],
   'payment-modes': ['OWNER','ADMIN','ACCOUNTANT','AUDITOR'],
@@ -125,6 +126,7 @@ export default function LedgerProApp() {
       { id: 'receipts',  label: 'Receipts',        icon: '↓' },
     ]},
     { group: 'Payables', items: [
+      { id: 'vendors',      label: 'Vendor Master',    icon: '🏢' },
       { id: 'ap',           label: 'AP Tracker',       icon: '◎' },
       { id: 'ap-requests',  label: 'Expense Requests', icon: '📥' },
     ]},
@@ -310,6 +312,7 @@ export default function LedgerProApp() {
                 {page === 'ap-requests' && <ApRequestsPage showToast={showToast} />}
                 {page === 'payments'  && <PaymentsPage   showToast={showToast} />}
                 {page === 'receipts'  && <ReceiptsPage   showToast={showToast} />}
+                {page === 'vendors'   && <VendorMasterPage showToast={showToast} />}
                 {page === 'payment-modes' && <PaymentModesPage showToast={showToast} />}
                 {page === 'recon'     && <ReconPage      showToast={showToast} />}
                 {page === 'vendor-recon' && <VendorReconPage showToast={showToast} />}
@@ -1609,9 +1612,10 @@ function ApPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => void 
   const [invoices, setInvoices] = useState<ApInvoice[]>([])
   const [summary, setSummary] = useState({ total:0, overdueCount:0, overdue30:0, overdue90plus:0 })
   const [accounts, setAccounts] = useState<Account[]>([])
+  const [approvedVendors, setApprovedVendors] = useState<VendorRow[]>([])
   const [showForm, setShowForm] = useState(false)
   const [payingInvoice, setPayingInvoice] = useState<ApInvoice | null>(null)
-  const [form, setForm] = useState({ vendor:'', invoiceNo:'', invoiceDate:'', dueDate:'', amount:'', accountId:'', notes:'' })
+  const [form, setForm] = useState({ vendor:'', vendorId:'', invoiceNo:'', invoiceDate:'', dueDate:'', amount:'', accountId:'', notes:'' })
   const canWrite = ['OWNER','ADMIN','ACCOUNTANT','AP_CLERK'].includes(role)
 
   const load = useCallback(() => {
@@ -1620,18 +1624,37 @@ function ApPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => void 
       setInvoices(d.invoices ?? [])
       setSummary(d.summary ?? { total:0, overdueCount:0, overdue30:0, overdue90plus:0 })
     })
-    fetch(`/api/accounts?entityId=${currentEntity.id}`).then(r => r.json()).then(setAccounts)
+    fetch(`/api/accounts?entityId=${currentEntity.id}`).then(r => r.json()).then(d => setAccounts(Array.isArray(d) ? d : []))
+    // Only APPROVED vendors are eligible for invoice booking
+    fetch(`/api/vendors?entityId=${currentEntity.id}&status=APPROVED`)
+      .then(r => r.json())
+      .then(d => setApprovedVendors(Array.isArray(d.vendors) ? d.vendors : []))
+      .catch(() => setApprovedVendors([]))
   }, [currentEntity])
 
   useEffect(() => { load() }, [load])
+
+  // When user picks a vendor from the dropdown, auto-fill vendor name and
+  // (if set) the vendor's default expense account.
+  const pickVendor = (vendorId: string) => {
+    const v = approvedVendors.find(x => x.id === vendorId)
+    if (!v) { setForm(f => ({ ...f, vendorId: '' })); return }
+    setForm(f => ({
+      ...f,
+      vendorId: v.id,
+      vendor:   v.legalName,
+      // Don't override an account the user has already picked
+      accountId: f.accountId || '',
+    }))
+  }
 
   const save = async () => {
     if (!currentEntity) return
     const res = await fetch('/api/ap', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ entityId: currentEntity.id, ...form, amount: parseFloat(form.amount) }),
+      body: JSON.stringify({ entityId: currentEntity.id, ...form, vendorId: form.vendorId || undefined, amount: parseFloat(form.amount) }),
     })
-    if (res.ok) { showToast('Invoice added'); setShowForm(false); setForm({ vendor:'',invoiceNo:'',invoiceDate:'',dueDate:'',amount:'',accountId:'',notes:'' }); load() }
+    if (res.ok) { showToast('Invoice added'); setShowForm(false); setForm({ vendor:'',vendorId:'',invoiceNo:'',invoiceDate:'',dueDate:'',amount:'',accountId:'',notes:'' }); load() }
     else { const d = await res.json(); showToast(d.error ?? 'Error', 'err') }
   }
 
@@ -1658,8 +1681,40 @@ function ApPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => void 
       {showForm && (
         <div style={{ ...S.card, marginBottom:16 }}>
           <div style={S.cardHeader}>New AP Invoice</div>
+          {approvedVendors.length === 0 && (
+            <div style={{ padding: 10, background: '#fef3c7', border: '1px solid #fcd34d', borderRadius: 6, fontSize: 12, color: '#92400e', marginBottom: 12 }}>
+              No approved vendors yet — vendors must be added via <strong>Vendor Master</strong> and approved before they appear here.
+              You can still book an invoice by typing a vendor name in the free-text field below.
+            </div>
+          )}
           <div style={S.formGrid}>
-            <div><label style={S.label}>Vendor</label><input style={S.input} value={form.vendor} onChange={e => setForm(f=>({...f,vendor:e.target.value}))} placeholder="Vendor name" /></div>
+            <div style={{ gridColumn: '1 / -1' }}>
+              <label style={S.label}>Vendor (from master)</label>
+              <select
+                style={S.select}
+                value={form.vendorId}
+                onChange={e => pickVendor(e.target.value)}
+              >
+                <option value="">— select an approved vendor —</option>
+                {approvedVendors.map(v => (
+                  <option key={v.id} value={v.id}>
+                    {v.vendorNumber ? `${v.vendorNumber} · ` : ''}{v.legalName}
+                    {v.paymentTerms ? ` (${v.paymentTerms})` : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div style={{ gridColumn: '1 / -1' }}>
+              <label style={S.label}>
+                Vendor name{form.vendorId ? ' (auto-filled — edit to override)' : ' (free-text — for one-off vendors not in master)'}
+              </label>
+              <input
+                style={{ ...S.input, ...(form.vendorId ? { background: '#f8fafc' } : {}) }}
+                value={form.vendor}
+                onChange={e => setForm(f=>({...f,vendor:e.target.value}))}
+                placeholder="Vendor name"
+              />
+            </div>
             <div><label style={S.label}>Invoice #</label><input style={S.input} value={form.invoiceNo} onChange={e => setForm(f=>({...f,invoiceNo:e.target.value}))} placeholder="INV-001" /></div>
             <div><label style={S.label}>Invoice Date</label><input style={S.input} type="date" value={form.invoiceDate} onChange={e => setForm(f=>({...f,invoiceDate:e.target.value}))} /></div>
             <div><label style={S.label}>Due Date</label><input style={S.input} type="date" value={form.dueDate} onChange={e => setForm(f=>({...f,dueDate:e.target.value}))} /></div>
@@ -7679,6 +7734,836 @@ function PaymentModesPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err'
           </tbody>
         </table>
       </div>
+    </div>
+  )
+}
+
+// ─── Vendor Master ────────────────────────────────────────────────────────────
+type VendorStatus = 'PENDING_APPROVAL' | 'APPROVED' | 'REJECTED' | 'INACTIVE'
+type VendorFrequency = 'ON_DEMAND'|'DAILY'|'WEEKLY'|'MONTHLY'|'QUARTERLY'|'SEMI_ANNUAL'|'ANNUAL'|'STATUTORY'|'ONE_TIME'|'OTHER'
+
+interface VendorRow {
+  id: string
+  vendorNumber: string | null
+  legalName: string
+  displayName: string | null
+  contactPerson: string | null
+  email: string | null
+  phone: string | null
+  taxId: string | null
+  taxIdType: string | null
+  is1099Vendor: boolean
+  paymentTerms: string | null
+  currency: string
+  status: VendorStatus
+  submittedBy: string | null
+  submittedAt: string
+  approvedAt: string | null
+  rejectedAt: string | null
+  rejectionReason: string | null
+  servicesCount?: number
+  attachmentsCount?: number
+  invoiceCount?: number
+}
+
+interface VendorDetail extends VendorRow {
+  website: string | null
+  addressLine1: string | null
+  addressLine2: string | null
+  city: string | null
+  state: string | null
+  postalCode: string | null
+  country: string | null
+  taxResidency: string | null
+  creditLimit: number | null
+  defaultAccountId: string | null
+  defaultAccount: { code: string; name: string } | null
+  bankName: string | null
+  bankAccountName: string | null
+  bankAccountNumber: string | null
+  bankRoutingNumber: string | null
+  bankSwiftBic: string | null
+  bankIban: string | null
+  notes: string | null
+  services: VendorServiceRow[]
+  attachments: Array<{ id: string; filename: string; mimeType: string; size: number; createdAt: string }>
+}
+
+interface VendorServiceRow {
+  id: string
+  serviceName: string
+  frequency: VendorFrequency
+  defaultAccountId: string | null
+  estimatedAmount: number | null
+  notes: string | null
+  isActive: boolean
+}
+
+const FREQ_LABEL: Record<VendorFrequency, string> = {
+  ON_DEMAND: 'On Demand', DAILY: 'Daily', WEEKLY: 'Weekly', MONTHLY: 'Monthly',
+  QUARTERLY: 'Quarterly', SEMI_ANNUAL: 'Semi-Annual', ANNUAL: 'Annual',
+  STATUTORY: 'Statutory', ONE_TIME: 'One-Time', OTHER: 'Other',
+}
+
+const STATUS_BADGE: Record<VendorStatus, { bg: string; fg: string; label: string }> = {
+  PENDING_APPROVAL: { bg: '#fef3c7', fg: '#92400e', label: 'Pending Approval' },
+  APPROVED:         { bg: '#dcfce7', fg: '#166534', label: 'Approved' },
+  REJECTED:         { bg: '#fee2e2', fg: '#991b1b', label: 'Rejected' },
+  INACTIVE:         { bg: '#f1f5f9', fg: '#475569', label: 'Inactive' },
+}
+
+function VendorMasterPage({ showToast }: { showToast: (m: string, t?: 'ok'|'err') => void }) {
+  const { currentEntity, role } = useApp()
+  const [vendors, setVendors] = useState<VendorRow[]>([])
+  const [summary, setSummary] = useState<Record<VendorStatus | 'ALL', number>>({
+    PENDING_APPROVAL: 0, APPROVED: 0, REJECTED: 0, INACTIVE: 0, ALL: 0,
+  })
+  const [filter, setFilter] = useState<VendorStatus | 'ALL'>('ALL')
+  const [search, setSearch] = useState('')
+  const [accounts, setAccounts] = useState<Account[]>([])
+  const [activeId, setActiveId] = useState<string | null>(null)
+  const [creating, setCreating] = useState(false)
+
+  const canWrite   = ['OWNER','ADMIN','ACCOUNTANT','AP_CLERK'].includes(role)
+  const canApprove = ['OWNER','ADMIN','ACCOUNTANT'].includes(role)
+
+  const loadList = useCallback(() => {
+    if (!currentEntity) return
+    const sp = new URLSearchParams({ entityId: currentEntity.id })
+    if (filter !== 'ALL') sp.set('status', filter)
+    if (search.trim())    sp.set('q', search.trim())
+    fetch(`/api/vendors?${sp}`).then(r => r.json()).then(d => {
+      setVendors(Array.isArray(d.vendors) ? d.vendors : [])
+      if (d.summary) setSummary(d.summary)
+    }).catch(() => setVendors([]))
+    fetch(`/api/accounts?entityId=${currentEntity.id}`).then(r => r.json()).then(d => setAccounts(Array.isArray(d) ? d : []))
+  }, [currentEntity, filter, search])
+  useEffect(() => { loadList() }, [loadList])
+
+  if (activeId) {
+    return <VendorDetail
+      vendorId={activeId}
+      accounts={accounts}
+      canWrite={canWrite}
+      canApprove={canApprove}
+      onBack={() => { setActiveId(null); loadList() }}
+      showToast={showToast}
+    />
+  }
+
+  if (creating) {
+    return <VendorForm
+      mode="create"
+      accounts={accounts}
+      onCancel={() => setCreating(false)}
+      onSaved={(newId) => { setCreating(false); setActiveId(newId); loadList() }}
+      showToast={showToast}
+    />
+  }
+
+  return (
+    <div>
+      <div style={S.kpiGrid}>
+        {([
+          { key: 'PENDING_APPROVAL', label: 'Pending Approval', color: '#d97706' },
+          { key: 'APPROVED',         label: 'Approved',         color: '#16a34a' },
+          { key: 'REJECTED',         label: 'Rejected',         color: '#dc2626' },
+          { key: 'INACTIVE',         label: 'Inactive',         color: '#94a3b8' },
+        ] as const).map(k => (
+          <div key={k.key} style={S.kpiCard}>
+            <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 4 }}>{k.label}</div>
+            <div style={{ fontSize: 24, fontWeight: 700, color: k.color }}>{summary[k.key]}</div>
+          </div>
+        ))}
+      </div>
+
+      <div style={S.pageActions}>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+          {(['ALL','PENDING_APPROVAL','APPROVED','REJECTED','INACTIVE'] as const).map(s => (
+            <button key={s} style={{ ...S.filterBtn, ...(filter === s ? S.filterBtnActive : {}) }}
+                    onClick={() => setFilter(s)}>
+              {s === 'ALL' ? `All (${summary.ALL})` : `${STATUS_BADGE[s].label} (${summary[s]})`}
+            </button>
+          ))}
+          <input
+            style={{ ...S.input, marginBottom: 0, marginLeft: 8, minWidth: 220, width: 240 }}
+            placeholder="Search name, vendor #, tax ID, email…"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+          />
+        </div>
+        {canWrite && <button style={{ ...S.btn, ...S.btnPrimary }} onClick={() => setCreating(true)}>+ New Vendor</button>}
+      </div>
+
+      <div style={S.card}>
+        <table style={S.table}>
+          <thead><tr>{['Vendor #','Legal Name','Contact','Tax ID','Terms','Status','Services','Docs','Invoices','Submitted'].map(h =>
+            <th key={h} style={S.th}>{h}</th>)}</tr></thead>
+          <tbody>
+            {vendors.length === 0 && <tr><td colSpan={10} style={{ ...S.td, textAlign: 'center', color: '#94a3b8' }}>
+              No vendors match these filters
+            </td></tr>}
+            {vendors.map(v => (
+              <tr key={v.id} style={{ cursor: 'pointer' }} onClick={() => setActiveId(v.id)}>
+                <td style={{ ...S.td, fontFamily: 'monospace', fontSize: 11 }}>{v.vendorNumber}</td>
+                <td style={{ ...S.td, fontWeight: 500 }}>
+                  {v.legalName}
+                  {v.displayName && <div style={{ fontSize: 11, color: '#94a3b8' }}>{v.displayName}</div>}
+                </td>
+                <td style={{ ...S.td, fontSize: 12 }}>
+                  {v.contactPerson ?? <span style={{ color: '#cbd5e1' }}>—</span>}
+                  {v.email && <div style={{ fontSize: 11, color: '#64748b' }}>{v.email}</div>}
+                </td>
+                <td style={{ ...S.td, fontSize: 12, fontFamily: 'monospace' }}>
+                  {v.taxId ? `${v.taxIdType ?? ''} ${v.taxId}`.trim() : <span style={{ color: '#cbd5e1' }}>—</span>}
+                </td>
+                <td style={{ ...S.td, fontSize: 12 }}>{v.paymentTerms ?? '—'}</td>
+                <td style={S.td}>
+                  <span style={{
+                    padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600,
+                    background: STATUS_BADGE[v.status].bg, color: STATUS_BADGE[v.status].fg,
+                  }}>{STATUS_BADGE[v.status].label}</span>
+                </td>
+                <td style={{ ...S.td, fontSize: 12, textAlign: 'right' }}>{v.servicesCount ?? 0}</td>
+                <td style={{ ...S.td, fontSize: 12, textAlign: 'right' }}>{v.attachmentsCount ?? 0}</td>
+                <td style={{ ...S.td, fontSize: 12, textAlign: 'right' }}>{v.invoiceCount ?? 0}</td>
+                <td style={{ ...S.td, fontSize: 11, color: '#64748b' }}>{fmtDate(v.submittedAt)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+// ─── Vendor create/edit form ─────────────────────────────────────────────────
+function VendorForm({
+  mode, vendor, accounts, onCancel, onSaved, showToast,
+}: {
+  mode: 'create' | 'edit'
+  vendor?: VendorDetail
+  accounts: Account[]
+  onCancel: () => void
+  onSaved: (id: string) => void
+  showToast: (m: string, t?: 'ok'|'err') => void
+}) {
+  const { currentEntity } = useApp()
+  const [form, setForm] = useState({
+    vendorNumber:    vendor?.vendorNumber ?? '',
+    legalName:       vendor?.legalName ?? '',
+    displayName:     vendor?.displayName ?? '',
+    contactPerson:   vendor?.contactPerson ?? '',
+    email:           vendor?.email ?? '',
+    phone:           vendor?.phone ?? '',
+    website:         vendor?.website ?? '',
+    addressLine1:    vendor?.addressLine1 ?? '',
+    addressLine2:    vendor?.addressLine2 ?? '',
+    city:            vendor?.city ?? '',
+    state:           vendor?.state ?? '',
+    postalCode:      vendor?.postalCode ?? '',
+    country:         vendor?.country ?? '',
+    taxId:           vendor?.taxId ?? '',
+    taxIdType:       vendor?.taxIdType ?? '',
+    is1099Vendor:    vendor?.is1099Vendor ?? false,
+    taxResidency:    vendor?.taxResidency ?? '',
+    paymentTerms:    vendor?.paymentTerms ?? 'Net 30',
+    currency:        vendor?.currency ?? 'USD',
+    creditLimit:     vendor?.creditLimit != null ? String(vendor.creditLimit) : '',
+    defaultAccountId: vendor?.defaultAccountId ?? '',
+    bankName:        vendor?.bankName ?? '',
+    bankAccountName: vendor?.bankAccountName ?? '',
+    bankAccountNumber: vendor?.bankAccountNumber ?? '',
+    bankRoutingNumber: vendor?.bankRoutingNumber ?? '',
+    bankSwiftBic:    vendor?.bankSwiftBic ?? '',
+    bankIban:        vendor?.bankIban ?? '',
+    notes:           vendor?.notes ?? '',
+  })
+
+  const apAndExpenseAccounts = accounts.filter(a => a.isActive && (a.type === 'EXPENSE' || a.type === 'LIABILITY' || a.type === 'COGS'))
+
+  const save = async () => {
+    if (!currentEntity) return
+    if (!form.legalName.trim()) return showToast('Legal name is required', 'err')
+
+    const body: Record<string, unknown> = {
+      entityId: currentEntity.id,
+      ...form,
+      creditLimit: form.creditLimit ? Number(form.creditLimit) : null,
+      defaultAccountId: form.defaultAccountId || null,
+    }
+    if (mode === 'edit' && vendor) body.id = vendor.id
+
+    const res = await fetch('/api/vendors', {
+      method: mode === 'create' ? 'POST' : 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    const d = await res.json()
+    if (res.ok) {
+      showToast(mode === 'create' ? 'Vendor submitted for approval' : 'Vendor updated')
+      onSaved(d.id ?? vendor?.id ?? '')
+    } else {
+      showToast(Array.isArray(d.error) ? (d.error[0]?.message ?? 'Failed') : (d.error ?? 'Failed'), 'err')
+    }
+  }
+
+  const sectionStyle: React.CSSProperties = {
+    fontSize: 12, fontWeight: 700, color: '#475569',
+    textTransform: 'uppercase', letterSpacing: 0.05,
+    marginTop: 16, marginBottom: 8, paddingTop: 12, borderTop: '1px solid #e2e8f0',
+  }
+
+  return (
+    <div>
+      <div style={S.pageActions}>
+        <button style={S.btn} onClick={onCancel}>← Back to list</button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button style={S.btn} onClick={onCancel}>Cancel</button>
+          <button style={{ ...S.btn, ...S.btnPrimary }} onClick={save}>
+            {mode === 'create' ? 'Submit for Approval' : 'Save Changes'}
+          </button>
+        </div>
+      </div>
+
+      <div style={S.card}>
+        <div style={S.cardHeader}>{mode === 'create' ? 'New Vendor' : `Edit Vendor: ${vendor?.legalName}`}</div>
+        {mode === 'create' && (
+          <div style={{ padding: 10, background: '#fef3c7', border: '1px solid #fcd34d', borderRadius: 6, fontSize: 12, color: '#92400e', marginBottom: 12 }}>
+            Once submitted, this vendor enters the approval queue. It will become available for invoice booking only after an approver reviews and approves it.
+          </div>
+        )}
+
+        <div style={sectionStyle}>Identity</div>
+        <div style={S.formGrid}>
+          <div>
+            <label style={S.label}>Vendor # (optional — auto-assigned if blank)</label>
+            <input style={S.input} value={form.vendorNumber} onChange={e => setForm(f => ({ ...f, vendorNumber: e.target.value }))} placeholder="V-0001" />
+          </div>
+          <div>
+            <label style={S.label}>Legal Name *</label>
+            <input style={S.input} value={form.legalName} onChange={e => setForm(f => ({ ...f, legalName: e.target.value }))} placeholder="Acme Corporation Pvt. Ltd." />
+          </div>
+          <div>
+            <label style={S.label}>Display Name / DBA</label>
+            <input style={S.input} value={form.displayName} onChange={e => setForm(f => ({ ...f, displayName: e.target.value }))} placeholder="Acme" />
+          </div>
+          <div>
+            <label style={S.label}>Contact Person</label>
+            <input style={S.input} value={form.contactPerson} onChange={e => setForm(f => ({ ...f, contactPerson: e.target.value }))} placeholder="Jane Doe" />
+          </div>
+          <div>
+            <label style={S.label}>Email</label>
+            <input style={S.input} value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} placeholder="ap@acme.com" />
+          </div>
+          <div>
+            <label style={S.label}>Phone</label>
+            <input style={S.input} value={form.phone} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} placeholder="+1 555 1212" />
+          </div>
+          <div style={{ gridColumn: '1 / -1' }}>
+            <label style={S.label}>Website</label>
+            <input style={S.input} value={form.website} onChange={e => setForm(f => ({ ...f, website: e.target.value }))} placeholder="https://acme.com" />
+          </div>
+        </div>
+
+        <div style={sectionStyle}>Address</div>
+        <div style={S.formGrid}>
+          <div style={{ gridColumn: '1 / -1' }}>
+            <label style={S.label}>Address Line 1</label>
+            <input style={S.input} value={form.addressLine1} onChange={e => setForm(f => ({ ...f, addressLine1: e.target.value }))} placeholder="Street address" />
+          </div>
+          <div style={{ gridColumn: '1 / -1' }}>
+            <label style={S.label}>Address Line 2</label>
+            <input style={S.input} value={form.addressLine2} onChange={e => setForm(f => ({ ...f, addressLine2: e.target.value }))} placeholder="Suite, floor, etc." />
+          </div>
+          <div>
+            <label style={S.label}>City</label>
+            <input style={S.input} value={form.city} onChange={e => setForm(f => ({ ...f, city: e.target.value }))} />
+          </div>
+          <div>
+            <label style={S.label}>State / Province</label>
+            <input style={S.input} value={form.state} onChange={e => setForm(f => ({ ...f, state: e.target.value }))} />
+          </div>
+          <div>
+            <label style={S.label}>Postal Code</label>
+            <input style={S.input} value={form.postalCode} onChange={e => setForm(f => ({ ...f, postalCode: e.target.value }))} />
+          </div>
+          <div>
+            <label style={S.label}>Country</label>
+            <input style={S.input} value={form.country} onChange={e => setForm(f => ({ ...f, country: e.target.value }))} placeholder="United States" />
+          </div>
+        </div>
+
+        <div style={sectionStyle}>Tax & Compliance</div>
+        <div style={S.formGrid}>
+          <div>
+            <label style={S.label}>Tax ID Type</label>
+            <select style={S.select} value={form.taxIdType} onChange={e => setForm(f => ({ ...f, taxIdType: e.target.value }))}>
+              <option value="">—</option>
+              {['EIN','SSN','GST','VAT','PAN','ABN','CRN','TIN','OTHER'].map(t => <option key={t} value={t}>{t}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={S.label}>Tax ID</label>
+            <input style={S.input} value={form.taxId} onChange={e => setForm(f => ({ ...f, taxId: e.target.value }))} placeholder="12-3456789" />
+          </div>
+          <div>
+            <label style={S.label}>Tax Residency</label>
+            <input style={S.input} value={form.taxResidency} onChange={e => setForm(f => ({ ...f, taxResidency: e.target.value }))} placeholder="US" />
+          </div>
+          <div style={{ display: 'flex', alignItems: 'flex-end' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#475569', paddingBottom: 8 }}>
+              <input type="checkbox" checked={form.is1099Vendor} onChange={e => setForm(f => ({ ...f, is1099Vendor: e.target.checked }))} />
+              <span>1099 vendor (US reporting)</span>
+            </label>
+          </div>
+        </div>
+
+        <div style={sectionStyle}>Financial</div>
+        <div style={S.formGrid}>
+          <div>
+            <label style={S.label}>Payment Terms</label>
+            <select style={S.select} value={form.paymentTerms} onChange={e => setForm(f => ({ ...f, paymentTerms: e.target.value }))}>
+              {['Due on Receipt','Net 15','Net 30','Net 45','Net 60','Net 90'].map(t => <option key={t} value={t}>{t}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={S.label}>Currency</label>
+            <select style={S.select} value={form.currency} onChange={e => setForm(f => ({ ...f, currency: e.target.value }))}>
+              {['USD','EUR','GBP','INR','JPY','CAD','AUD','CHF','SGD','HKD','CNY','AED'].map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={S.label}>Credit Limit</label>
+            <input style={S.input} value={form.creditLimit} onChange={e => setForm(f => ({ ...f, creditLimit: e.target.value }))} placeholder="0.00" inputMode="decimal" />
+          </div>
+          <div>
+            <label style={S.label}>Default Expense / AP Account</label>
+            <select style={S.select} value={form.defaultAccountId} onChange={e => setForm(f => ({ ...f, defaultAccountId: e.target.value }))}>
+              <option value="">— (none)</option>
+              {apAndExpenseAccounts.map(a => <option key={a.id} value={a.id}>{a.code} — {a.name} ({a.type})</option>)}
+            </select>
+          </div>
+        </div>
+
+        <div style={sectionStyle}>Bank Details (for ACH / wire)</div>
+        <div style={S.formGrid}>
+          <div><label style={S.label}>Bank Name</label><input style={S.input} value={form.bankName} onChange={e => setForm(f => ({ ...f, bankName: e.target.value }))} /></div>
+          <div><label style={S.label}>Account Name</label><input style={S.input} value={form.bankAccountName} onChange={e => setForm(f => ({ ...f, bankAccountName: e.target.value }))} /></div>
+          <div><label style={S.label}>Account Number</label><input style={S.input} value={form.bankAccountNumber} onChange={e => setForm(f => ({ ...f, bankAccountNumber: e.target.value }))} /></div>
+          <div><label style={S.label}>Routing Number</label><input style={S.input} value={form.bankRoutingNumber} onChange={e => setForm(f => ({ ...f, bankRoutingNumber: e.target.value }))} /></div>
+          <div><label style={S.label}>SWIFT / BIC</label><input style={S.input} value={form.bankSwiftBic} onChange={e => setForm(f => ({ ...f, bankSwiftBic: e.target.value }))} /></div>
+          <div><label style={S.label}>IBAN</label><input style={S.input} value={form.bankIban} onChange={e => setForm(f => ({ ...f, bankIban: e.target.value }))} /></div>
+        </div>
+
+        <div style={sectionStyle}>Notes</div>
+        <textarea
+          style={{ ...S.input, minHeight: 70, fontFamily: 'inherit' }}
+          value={form.notes}
+          onChange={e => setForm(f => ({ ...f, notes: e.target.value }))}
+          placeholder="Any internal notes about this vendor"
+        />
+
+        <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+          <button style={{ ...S.btn, ...S.btnPrimary }} onClick={save}>
+            {mode === 'create' ? 'Submit for Approval' : 'Save Changes'}
+          </button>
+          <button style={S.btn} onClick={onCancel}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Vendor detail view (with Details / Services / Documents tabs) ───────────
+function VendorDetail({
+  vendorId, accounts, canWrite, canApprove, onBack, showToast,
+}: {
+  vendorId: string
+  accounts: Account[]
+  canWrite: boolean
+  canApprove: boolean
+  onBack: () => void
+  showToast: (m: string, t?: 'ok'|'err') => void
+}) {
+  const { currentEntity } = useApp()
+  const [vendor, setVendor] = useState<VendorDetail | null>(null)
+  const [tab, setTab] = useState<'details'|'services'|'documents'>('details')
+  const [editing, setEditing] = useState(false)
+
+  const load = useCallback(() => {
+    if (!currentEntity) return
+    fetch(`/api/vendors?entityId=${currentEntity.id}&id=${vendorId}`)
+      .then(r => r.json()).then(d => setVendor(d.error ? null : d))
+  }, [currentEntity, vendorId])
+  useEffect(() => { load() }, [load])
+
+  if (!vendor) return <div style={{ padding: 24, color: '#94a3b8' }}>Loading vendor…</div>
+
+  if (editing) {
+    return <VendorForm
+      mode="edit"
+      vendor={vendor}
+      accounts={accounts}
+      onCancel={() => setEditing(false)}
+      onSaved={() => { setEditing(false); load() }}
+      showToast={showToast}
+    />
+  }
+
+  const status = vendor.status
+  const isEditable = status === 'PENDING_APPROVAL' || status === 'REJECTED' || status === 'APPROVED'
+
+  const transition = async (action: string, reason?: string) => {
+    if (!currentEntity) return
+    const res = await fetch('/api/vendors', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ entityId: currentEntity.id, id: vendor.id, transition: action, reason }),
+    })
+    const d = await res.json()
+    if (res.ok) { showToast(`Vendor ${action}d`); load() }
+    else showToast(d.error ?? 'Failed', 'err')
+  }
+
+  const reject = async () => {
+    const reason = prompt('Reason for rejection (required):')
+    if (!reason || !reason.trim()) return
+    transition('reject', reason.trim())
+  }
+  const approve = () => transition('approve')
+  const archive = async () => {
+    if (!confirm(`Archive vendor "${vendor.legalName}"? They will no longer appear for new invoices.`)) return
+    transition('archive')
+  }
+  const reactivate = () => transition('reactivate')
+  const resubmit = () => transition('resubmit')
+
+  return (
+    <div>
+      <div style={S.pageActions}>
+        <button style={S.btn} onClick={onBack}>← Back to list</button>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {canWrite && isEditable && status !== 'INACTIVE' && (
+            <button style={S.btn} onClick={() => setEditing(true)}>Edit</button>
+          )}
+          {canApprove && status === 'PENDING_APPROVAL' && <>
+            <button style={{ ...S.btn, background: '#16a34a', color: '#fff', borderColor: '#15803d' }} onClick={approve}>Approve</button>
+            <button style={{ ...S.btn, background: '#dc2626', color: '#fff', borderColor: '#b91c1c' }} onClick={reject}>Reject</button>
+          </>}
+          {canWrite && status === 'REJECTED' && <button style={{ ...S.btn, ...S.btnPrimary }} onClick={resubmit}>Resubmit</button>}
+          {canApprove && status === 'APPROVED' && <button style={S.btn} onClick={archive}>Archive</button>}
+          {canApprove && status === 'INACTIVE' && <button style={S.btn} onClick={reactivate}>Reactivate</button>}
+        </div>
+      </div>
+
+      <div style={S.card}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+          <div>
+            <div style={{ fontSize: 11, color: '#64748b', fontFamily: 'monospace' }}>{vendor.vendorNumber}</div>
+            <div style={{ fontSize: 22, fontWeight: 700 }}>{vendor.legalName}</div>
+            {vendor.displayName && <div style={{ fontSize: 13, color: '#64748b' }}>{vendor.displayName}</div>}
+          </div>
+          <span style={{
+            padding: '4px 12px', borderRadius: 6, fontSize: 12, fontWeight: 700,
+            background: STATUS_BADGE[status].bg, color: STATUS_BADGE[status].fg,
+          }}>{STATUS_BADGE[status].label}</span>
+        </div>
+
+        {status === 'REJECTED' && vendor.rejectionReason && (
+          <div style={{ padding: 10, background: '#fee2e2', border: '1px solid #fecaca', borderRadius: 6, fontSize: 12, color: '#991b1b', marginTop: 12 }}>
+            <strong>Rejection reason:</strong> {vendor.rejectionReason}
+          </div>
+        )}
+      </div>
+
+      <div style={{ display: 'flex', gap: 4, marginTop: 12, borderBottom: '1px solid #e2e8f0' }}>
+        {(['details','services','documents'] as const).map(t => (
+          <button key={t} onClick={() => setTab(t)}
+            style={{
+              padding: '8px 14px', fontSize: 13, fontWeight: 600,
+              background: tab === t ? '#fff' : 'transparent',
+              border: tab === t ? '1px solid #e2e8f0' : '1px solid transparent',
+              borderBottom: tab === t ? '1px solid #fff' : '1px solid #e2e8f0',
+              borderRadius: '6px 6px 0 0', marginBottom: -1,
+              color: tab === t ? '#0f172a' : '#64748b', cursor: 'pointer',
+              textTransform: 'capitalize',
+            }}>
+            {t === 'services' ? `Services (${vendor.services.length})` :
+             t === 'documents' ? `Documents (${vendor.attachments.length})` :
+             'Details'}
+          </button>
+        ))}
+      </div>
+
+      <div style={{ ...S.card, borderTopLeftRadius: 0 }}>
+        {tab === 'details' && <VendorDetailsView vendor={vendor} />}
+        {tab === 'services' && <VendorServicesTab vendor={vendor} accounts={accounts} canWrite={canWrite} onChange={load} showToast={showToast} />}
+        {tab === 'documents' && <VendorDocumentsTab vendor={vendor} canWrite={canWrite} onChange={load} showToast={showToast} />}
+      </div>
+    </div>
+  )
+}
+
+function VendorDetailsView({ vendor }: { vendor: VendorDetail }) {
+  const cell: React.CSSProperties = { padding: 8 }
+  const lbl:  React.CSSProperties = { fontSize: 10, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.05, fontWeight: 600 }
+  const val:  React.CSSProperties = { fontSize: 13, color: '#0f172a', marginTop: 2 }
+  const addrParts = [vendor.addressLine1, vendor.addressLine2, vendor.city, vendor.state, vendor.postalCode, vendor.country].filter(Boolean)
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 4 }}>
+      <div style={cell}><div style={lbl}>Contact</div><div style={val}>{vendor.contactPerson ?? '—'}</div></div>
+      <div style={cell}><div style={lbl}>Email</div><div style={val}>{vendor.email ?? '—'}</div></div>
+      <div style={cell}><div style={lbl}>Phone</div><div style={val}>{vendor.phone ?? '—'}</div></div>
+      <div style={cell}><div style={lbl}>Website</div><div style={val}>{vendor.website ?? '—'}</div></div>
+      <div style={{ ...cell, gridColumn: '1 / -1' }}><div style={lbl}>Address</div><div style={val}>{addrParts.length ? addrParts.join(', ') : '—'}</div></div>
+      <div style={cell}><div style={lbl}>Tax ID</div><div style={val}>{vendor.taxId ? `${vendor.taxIdType ?? ''} ${vendor.taxId}`.trim() : '—'}</div></div>
+      <div style={cell}><div style={lbl}>Tax Residency</div><div style={val}>{vendor.taxResidency ?? '—'}</div></div>
+      <div style={cell}><div style={lbl}>1099 Vendor</div><div style={val}>{vendor.is1099Vendor ? 'Yes' : 'No'}</div></div>
+      <div style={cell}><div style={lbl}>Payment Terms</div><div style={val}>{vendor.paymentTerms ?? '—'}</div></div>
+      <div style={cell}><div style={lbl}>Currency</div><div style={val}>{vendor.currency}</div></div>
+      <div style={cell}><div style={lbl}>Credit Limit</div><div style={val}>{vendor.creditLimit != null ? `$${fmt(vendor.creditLimit)}` : '—'}</div></div>
+      <div style={cell}><div style={lbl}>Default Account</div><div style={val}>{vendor.defaultAccount ? `${vendor.defaultAccount.code} — ${vendor.defaultAccount.name}` : '—'}</div></div>
+      {vendor.bankName && <>
+        <div style={cell}><div style={lbl}>Bank</div><div style={val}>{vendor.bankName}</div></div>
+        <div style={cell}><div style={lbl}>Account #</div><div style={{ ...val, fontFamily: 'monospace' }}>{vendor.bankAccountNumber ?? '—'}</div></div>
+        <div style={cell}><div style={lbl}>Routing #</div><div style={{ ...val, fontFamily: 'monospace' }}>{vendor.bankRoutingNumber ?? '—'}</div></div>
+        <div style={cell}><div style={lbl}>SWIFT/BIC</div><div style={val}>{vendor.bankSwiftBic ?? '—'}</div></div>
+        <div style={cell}><div style={lbl}>IBAN</div><div style={{ ...val, fontFamily: 'monospace' }}>{vendor.bankIban ?? '—'}</div></div>
+      </>}
+      {vendor.notes && <div style={{ ...cell, gridColumn: '1 / -1' }}><div style={lbl}>Notes</div><div style={val}>{vendor.notes}</div></div>}
+    </div>
+  )
+}
+
+function VendorServicesTab({
+  vendor, accounts, canWrite, onChange, showToast,
+}: {
+  vendor: VendorDetail
+  accounts: Account[]
+  canWrite: boolean
+  onChange: () => void
+  showToast: (m: string, t?: 'ok'|'err') => void
+}) {
+  const { currentEntity } = useApp()
+  const [adding, setAdding] = useState(false)
+  const [form, setForm] = useState({
+    serviceName: '', frequency: 'MONTHLY' as VendorFrequency,
+    defaultAccountId: '', estimatedAmount: '', notes: '',
+  })
+
+  const add = async () => {
+    if (!currentEntity) return
+    if (!form.serviceName.trim()) return showToast('Service name is required', 'err')
+    const res = await fetch('/api/vendor-services', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        entityId: currentEntity.id, vendorId: vendor.id,
+        serviceName: form.serviceName,
+        frequency: form.frequency,
+        defaultAccountId: form.defaultAccountId || null,
+        estimatedAmount: form.estimatedAmount ? Number(form.estimatedAmount) : null,
+        notes: form.notes || undefined,
+      }),
+    })
+    const d = await res.json()
+    if (res.ok) {
+      showToast('Service added')
+      setAdding(false)
+      setForm({ serviceName: '', frequency: 'MONTHLY', defaultAccountId: '', estimatedAmount: '', notes: '' })
+      onChange()
+    } else showToast(d.error ?? 'Failed', 'err')
+  }
+
+  const remove = async (id: string, name: string) => {
+    if (!currentEntity) return
+    if (!confirm(`Remove service "${name}"?`)) return
+    const res = await fetch(`/api/vendor-services?entityId=${currentEntity.id}&id=${id}`, { method: 'DELETE' })
+    if (res.ok) { showToast('Removed'); onChange() }
+    else { const d = await res.json(); showToast(d.error ?? 'Failed', 'err') }
+  }
+
+  const toggleActive = async (id: string, isActive: boolean) => {
+    if (!currentEntity) return
+    const res = await fetch('/api/vendor-services', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ entityId: currentEntity.id, id, isActive }),
+    })
+    if (res.ok) onChange()
+  }
+
+  return (
+    <div>
+      {canWrite && (
+        <div style={{ marginBottom: 12 }}>
+          {!adding && <button style={{ ...S.btn, ...S.btnPrimary }} onClick={() => setAdding(true)}>+ Add Service</button>}
+          {adding && (
+            <div style={{ padding: 12, background: '#f8fafc', borderRadius: 6 }}>
+              <div style={S.formGrid}>
+                <div style={{ gridColumn: '1 / -1' }}>
+                  <label style={S.label}>Service Name</label>
+                  <input style={S.input} value={form.serviceName} onChange={e => setForm(f => ({ ...f, serviceName: e.target.value }))} placeholder="e.g. Monthly bookkeeping, Annual audit, Statutory GST filing" />
+                </div>
+                <div>
+                  <label style={S.label}>Frequency</label>
+                  <select style={S.select} value={form.frequency} onChange={e => setForm(f => ({ ...f, frequency: e.target.value as VendorFrequency }))}>
+                    {(Object.keys(FREQ_LABEL) as VendorFrequency[]).map(f => <option key={f} value={f}>{FREQ_LABEL[f]}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label style={S.label}>Default Expense Account</label>
+                  <select style={S.select} value={form.defaultAccountId} onChange={e => setForm(f => ({ ...f, defaultAccountId: e.target.value }))}>
+                    <option value="">— (none)</option>
+                    {accounts.filter(a => a.isActive && (a.type === 'EXPENSE' || a.type === 'COGS')).map(a =>
+                      <option key={a.id} value={a.id}>{a.code} — {a.name}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label style={S.label}>Estimated Amount</label>
+                  <input style={S.input} value={form.estimatedAmount} onChange={e => setForm(f => ({ ...f, estimatedAmount: e.target.value }))} placeholder="0.00" inputMode="decimal" />
+                </div>
+                <div style={{ gridColumn: '1 / -1' }}>
+                  <label style={S.label}>Notes</label>
+                  <input style={S.input} value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} />
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                <button style={{ ...S.btn, ...S.btnPrimary }} onClick={add}>Add</button>
+                <button style={S.btn} onClick={() => setAdding(false)}>Cancel</button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      <table style={S.table}>
+        <thead><tr>{['Service','Frequency','Default Account','Est. Amount','Notes','Active',''].map(h => <th key={h} style={S.th}>{h}</th>)}</tr></thead>
+        <tbody>
+          {vendor.services.length === 0 && <tr><td colSpan={7} style={{ ...S.td, textAlign: 'center', color: '#94a3b8' }}>
+            No services added yet
+          </td></tr>}
+          {vendor.services.map(s => (
+            <tr key={s.id} style={{ opacity: s.isActive ? 1 : 0.5 }}>
+              <td style={{ ...S.td, fontWeight: 500 }}>{s.serviceName}</td>
+              <td style={{ ...S.td, fontSize: 12 }}>{FREQ_LABEL[s.frequency]}</td>
+              <td style={{ ...S.td, fontSize: 12, color: '#64748b' }}>
+                {s.defaultAccountId
+                  ? (accounts.find(a => a.id === s.defaultAccountId)?.code ?? '—') + ' — ' + (accounts.find(a => a.id === s.defaultAccountId)?.name ?? '')
+                  : '—'}
+              </td>
+              <td style={{ ...S.td, fontFamily: 'monospace', textAlign: 'right' }}>{s.estimatedAmount != null ? `$${fmt(s.estimatedAmount)}` : '—'}</td>
+              <td style={{ ...S.td, fontSize: 12, color: '#64748b' }}>{s.notes ?? '—'}</td>
+              <td style={S.td}>
+                {canWrite ? (
+                  <input type="checkbox" checked={s.isActive} onChange={e => toggleActive(s.id, e.target.checked)} />
+                ) : (s.isActive ? '✓' : '—')}
+              </td>
+              <td style={{ ...S.td, textAlign: 'right' }}>
+                {canWrite && <button style={{ ...S.textBtn, color: '#dc2626' }} onClick={() => remove(s.id, s.serviceName)}>Remove</button>}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function VendorDocumentsTab({
+  vendor, canWrite, onChange, showToast,
+}: {
+  vendor: VendorDetail
+  canWrite: boolean
+  onChange: () => void
+  showToast: (m: string, t?: 'ok'|'err') => void
+}) {
+  const { currentEntity } = useApp()
+  const [uploading, setUploading] = useState(false)
+
+  const upload = async (file: File) => {
+    if (!currentEntity) return
+    if (file.size > 5 * 1024 * 1024) return showToast('File too large (max 5 MB)', 'err')
+    setUploading(true)
+    try {
+      const buf = await file.arrayBuffer()
+      const base64 = btoa(new Uint8Array(buf).reduce((s, b) => s + String.fromCharCode(b), ''))
+      const res = await fetch('/api/attachments', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          entityId: currentEntity.id, vendorId: vendor.id,
+          filename: file.name, mimeType: file.type || 'application/octet-stream',
+          dataBase64: base64,
+        }),
+      })
+      const d = await res.json()
+      if (res.ok) { showToast('Uploaded'); onChange() }
+      else showToast(d.error ?? 'Upload failed', 'err')
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  const download = async (id: string, filename: string) => {
+    if (!currentEntity) return
+    const res = await fetch(`/api/attachments?entityId=${currentEntity.id}&id=${id}`)
+    const d = await res.json()
+    if (!res.ok) return showToast(d.error ?? 'Failed', 'err')
+    const bin = atob(d.dataBase64)
+    const buf = new Uint8Array(bin.length)
+    for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i)
+    const blob = new Blob([buf], { type: d.mimeType })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url; a.download = filename; a.click()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }
+
+  const remove = async (id: string, filename: string) => {
+    if (!currentEntity) return
+    if (!confirm(`Delete "${filename}"?`)) return
+    const res = await fetch(`/api/attachments?entityId=${currentEntity.id}&id=${id}`, { method: 'DELETE' })
+    if (res.ok) { showToast('Deleted'); onChange() }
+    else { const d = await res.json(); showToast(d.error ?? 'Failed', 'err') }
+  }
+
+  return (
+    <div>
+      {canWrite && (
+        <div style={{ marginBottom: 12, padding: 12, background: '#f8fafc', borderRadius: 6 }}>
+          <div style={{ fontSize: 12, color: '#475569', marginBottom: 8 }}>
+            Upload contracts, agreements, NDAs, statements of work, or any other vendor documents (max 5 MB each).
+          </div>
+          <input
+            type="file"
+            disabled={uploading}
+            onChange={e => { const f = e.target.files?.[0]; if (f) upload(f); e.target.value = '' }}
+          />
+          {uploading && <span style={{ marginLeft: 12, fontSize: 12, color: '#64748b' }}>Uploading…</span>}
+        </div>
+      )}
+
+      <table style={S.table}>
+        <thead><tr>{['File','Type','Size','Uploaded',''].map(h => <th key={h} style={S.th}>{h}</th>)}</tr></thead>
+        <tbody>
+          {vendor.attachments.length === 0 && <tr><td colSpan={5} style={{ ...S.td, textAlign: 'center', color: '#94a3b8' }}>
+            No documents uploaded yet
+          </td></tr>}
+          {vendor.attachments.map(a => (
+            <tr key={a.id}>
+              <td style={{ ...S.td, fontWeight: 500 }}>{a.filename}</td>
+              <td style={{ ...S.td, fontSize: 11, color: '#64748b', fontFamily: 'monospace' }}>{a.mimeType}</td>
+              <td style={{ ...S.td, fontSize: 12, textAlign: 'right' }}>{(a.size / 1024).toFixed(1)} KB</td>
+              <td style={{ ...S.td, fontSize: 11, color: '#64748b' }}>{fmtDate(a.createdAt)}</td>
+              <td style={{ ...S.td, textAlign: 'right' }}>
+                <button style={S.textBtn} onClick={() => download(a.id, a.filename)}>Download</button>
+                {canWrite && <>
+                  <span style={{ color: '#cbd5e1', margin: '0 8px' }}>·</span>
+                  <button style={{ ...S.textBtn, color: '#dc2626' }} onClick={() => remove(a.id, a.filename)}>Delete</button>
+                </>}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   )
 }
